@@ -1,4 +1,4 @@
-package protocol
+package core
 
 import (
 	"context"
@@ -15,3 +15,4 @@ type HandlerFunc func(ctx context.Context, peerID peer.ID, msg Message) (Message
 func (f HandlerFunc) Handle(ctx context.Context, peerID peer.ID, msg Message) (Message, error) {
 	return f(ctx, peerID, msg)
 }
+

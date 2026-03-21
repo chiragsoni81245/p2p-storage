@@ -7,6 +7,8 @@ import (
 	"io"
 	"time"
 
+	"github.com/chiragsoni81245/p2p-storage/internal/core"
+	"github.com/chiragsoni81245/p2p-storage/internal/middleware"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -16,16 +18,18 @@ import (
 type Protocol struct {
 	host    host.Host
 	cfg     Config
-	handler Handler
+	handler core.Handler
 	id      protocol.ID
+	limiter *middleware.Limiter
 }
 
-func New(host host.Host, cfg Config, protocolID protocol.ID, handler Handler) *Protocol {
+func New(host host.Host, protocolID protocol.ID, handler core.Handler, cfg Config, limiter *middleware.Limiter) *Protocol {
 	p := &Protocol{
 		host:    host,
 		cfg:     cfg,
 		handler: handler,
 		id:      protocolID,
+		limiter: limiter,
 	}
 
 	host.SetStreamHandler(protocolID, p.handleStream)
@@ -34,6 +38,18 @@ func New(host host.Host, cfg Config, protocolID protocol.ID, handler Handler) *P
 }
 
 func (p *Protocol) handleStream(s network.Stream) {
+	/*
+		Here we try to acquire a slot to make sure we can spin a gorutine
+		This make sure we do not spin too much gorutines at same time
+	*/
+	if !p.limiter.Acquire() {
+		fmt.Println("Dropping request: overloaded")
+		_ = s.Reset() // aggressively close
+		return
+	}
+	defer p.limiter.Release()
+
+
 	defer s.Close()
 
 	// Set read deadline

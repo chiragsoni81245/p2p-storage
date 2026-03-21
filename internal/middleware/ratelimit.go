@@ -6,7 +6,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/chiragsoni81245/p2p-storage/internal/protocol"
+	"github.com/chiragsoni81245/p2p-storage/internal/core"
 
 	"github.com/libp2p/go-libp2p/core/peer"
 )
@@ -39,10 +39,10 @@ func NewRateLimiter(limit int, window, ttl time.Duration) *RateLimiter {
 	return rl
 }
 
-func (rl *RateLimiter) Wrap(next protocol.Handler) protocol.Handler {
-	return protocol.HandlerFunc(func(ctx context.Context, peerID peer.ID, msg protocol.Message) (protocol.Message, error) {
+func (rl *RateLimiter) Wrap(next core.Handler) core.Handler {
+	return core.HandlerFunc(func(ctx context.Context, peerID peer.ID, msg core.Message) (core.Message, error) {
 		if !rl.allow(peerID) {
-			return protocol.Message{}, fmt.Errorf("rate limit exceeded")
+			return nil, fmt.Errorf("rate limit exceeded")
 		}
 		return next.Handle(ctx, peerID, msg)
 	})

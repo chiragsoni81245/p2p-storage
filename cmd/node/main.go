@@ -6,6 +6,7 @@ import (
 	"log"
 	"time"
 
+	"github.com/chiragsoni81245/p2p-storage/internal/core"
 	"github.com/chiragsoni81245/p2p-storage/internal/discovery"
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
 	"github.com/chiragsoni81245/p2p-storage/internal/middleware"
@@ -38,7 +39,7 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var handler protocol.Handler
+	var handler core.Handler
 	handler = &protocol.PingHandler{}
 
 	// Apply Rate Limiting
@@ -50,7 +51,8 @@ func main() {
 	handler = rl.Wrap(handler)
 
 	protocolConfig := protocol.DefaultConfig()
-	proto := protocol.New(n, protocolConfig, "/app/1.0.0", handler)
+	limiter := middleware.NewLimiter(100) // Max concurrent request 100
+	proto := protocol.New(n, "/app/1.0.0", handler, protocolConfig, limiter)
 
 	go func() {
 		ch := bus.Subscribe(event.PeerConnected)
