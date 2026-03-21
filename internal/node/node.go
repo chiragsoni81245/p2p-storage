@@ -18,7 +18,14 @@ func NewNode(cfg Config) (host.Host, error) {
 		return nil, err
 	}
 
+	priv, err := LoadOrCreateIdentity(cfg.IdentityPath)
+	if err != nil {
+		return nil, err
+	}
+
 	node, err := libp2p.New(
+		libp2p.Identity(priv),
+
 		libp2p.ListenAddrStrings(
 			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", cfg.ListenPort),
 		),
