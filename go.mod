@@ -2,7 +2,10 @@ module github.com/chiragsoni81245/p2p-storage
 
 go 1.25.7
 
-require github.com/libp2p/go-libp2p v0.48.0
+require (
+	github.com/libp2p/go-libp2p v0.48.0
+	github.com/multiformats/go-multiaddr v0.16.0
+)
 
 require (
 	filippo.io/bigmod v0.1.1-0.20260103110540-f8a47775ebe5 // indirect
@@ -38,7 +41,6 @@ require (
 	github.com/mr-tron/base58 v1.2.0 // indirect
 	github.com/multiformats/go-base32 v0.1.0 // indirect
 	github.com/multiformats/go-base36 v0.2.0 // indirect
-	github.com/multiformats/go-multiaddr v0.16.0 // indirect
 	github.com/multiformats/go-multiaddr-dns v0.4.1 // indirect
 	github.com/multiformats/go-multiaddr-fmt v0.1.0 // indirect
 	github.com/multiformats/go-multibase v0.2.0 // indirect
