@@ -4,6 +4,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
+	"time"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -13,13 +15,15 @@ import (
 
 type Protocol struct {
 	host    host.Host
+	cfg     Config
 	handler Handler
 	id      protocol.ID
 }
 
-func New(host host.Host, protocolID protocol.ID, handler Handler) *Protocol {
+func New(host host.Host, cfg Config, protocolID protocol.ID, handler Handler) *Protocol {
 	p := &Protocol{
 		host:    host,
+		cfg:     cfg,
 		handler: handler,
 		id:      protocolID,
 	}
@@ -32,8 +36,13 @@ func New(host host.Host, protocolID protocol.ID, handler Handler) *Protocol {
 func (p *Protocol) handleStream(s network.Stream) {
 	defer s.Close()
 
-	decoder := json.NewDecoder(s)
-	encoder := json.NewEncoder(s)
+	// Set read deadline
+	_ = s.SetReadDeadline(time.Now().Add(p.cfg.ReadTimeout))
+
+	// Limit input size
+	limitedReader := io.LimitReader(s, p.cfg.MaxMessageSize)
+
+	decoder := json.NewDecoder(limitedReader)
 
 	var msg Message
 	if err := decoder.Decode(&msg); err != nil {
@@ -41,8 +50,15 @@ func (p *Protocol) handleStream(s network.Stream) {
 		return
 	}
 
+	// Reset read deadline (optional)
+	_ = s.SetReadDeadline(time.Time{})
+
+	// Handle with timeout
+	ctx, cancel := context.WithTimeout(context.Background(), p.cfg.HandlerTimeout)
+	defer cancel()
+
 	resp, err := p.handler.Handle(
-		context.Background(),
+		ctx,
 		s.Conn().RemotePeer(),
 		msg,
 	)
@@ -51,24 +67,39 @@ func (p *Protocol) handleStream(s network.Stream) {
 		return
 	}
 
+	// Set write deadline
+	_ = s.SetWriteDeadline(time.Now().Add(p.cfg.WriteTimeout))
+
+	encoder := json.NewEncoder(s)
 	if err := encoder.Encode(resp); err != nil {
 		fmt.Println("encode error:", err)
+		return
 	}
 }
 
 func (p *Protocol) Send(ctx context.Context, peerID peer.ID, msg Message) (Message, error) {
+	ctx, cancel := context.WithTimeout(ctx, p.cfg.HandlerTimeout)
+	defer cancel()
+
 	stream, err := p.host.NewStream(ctx, peerID, p.id)
 	if err != nil {
 		return Message{}, err
 	}
 	defer stream.Close()
 
-	encoder := json.NewEncoder(stream)
-	decoder := json.NewDecoder(stream)
+	// write deadline
+	_ = stream.SetWriteDeadline(time.Now().Add(p.cfg.WriteTimeout))
 
+	encoder := json.NewEncoder(stream)
 	if err := encoder.Encode(msg); err != nil {
 		return Message{}, err
 	}
+
+	// read deadline
+	_ = stream.SetReadDeadline(time.Now().Add(p.cfg.ReadTimeout))
+
+	limitedReader := io.LimitReader(stream, p.cfg.MaxMessageSize)
+	decoder := json.NewDecoder(limitedReader)
 
 	var resp Message
 	if err := decoder.Decode(&resp); err != nil {

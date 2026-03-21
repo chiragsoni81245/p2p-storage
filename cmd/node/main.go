@@ -16,11 +16,7 @@ import (
 )
 
 func main() {
-	cfg := node.Config{
-		ListenPort: 0,
-		MinConnection: 50,
-		MaxConnection: 100,
-	}
+	cfg := node.DefaultConfig()
 
 	n, err := node.NewNode(cfg)
 	if err != nil {
@@ -35,7 +31,7 @@ func main() {
 
 	bus := event.NewBus()
 
-	network.NewManager(&cfg, n, bus)
+	network.NewManager(cfg, n, bus)
 	
 	// Start discovery
 	if err := discovery.StartMDNS(n, bus, "p2p-storage"); err != nil {
@@ -53,7 +49,8 @@ func main() {
 	)
 	handler = rl.Wrap(handler)
 
-	proto := protocol.New(n, "/app/1.0.0", handler)
+	protocolConfig := protocol.DefaultConfig()
+	proto := protocol.New(n, protocolConfig, "/app/1.0.0", handler)
 
 	go func() {
 		ch := bus.Subscribe(event.PeerConnected)

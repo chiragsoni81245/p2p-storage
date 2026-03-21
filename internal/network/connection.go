@@ -15,10 +15,10 @@ import (
 type Manager struct {
 	host host.Host
 	bus  *event.Bus
-	cfg  *node.Config
+	cfg  node.Config
 }
 
-func NewManager(cfg *node.Config, h host.Host, bus *event.Bus) *Manager {
+func NewManager(cfg node.Config, h host.Host, bus *event.Bus) *Manager {
 	m := &Manager{
 		host: h,
 		bus:  bus,
