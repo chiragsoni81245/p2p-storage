@@ -2,11 +2,11 @@ package network
 
 import (
 	"context"
-	"fmt"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/discovery"
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
 	"github.com/chiragsoni81245/p2p-storage/internal/node"
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -17,13 +17,16 @@ type Manager struct {
 	host host.Host
 	bus  *event.Bus
 	cfg  node.Config
+	logger *observability.Logger
 }
 
-func NewManager(cfg node.Config, h host.Host, bus *event.Bus) *Manager {
+func NewManager(cfg node.Config, logger *observability.Logger, h host.Host, bus *event.Bus) *Manager {
 	m := &Manager{
 		host: h,
 		bus:  bus,
 		cfg:  cfg,
+		logger: logger,
+
 	}
 
 	h.Network().Notify(NewNotifier(bus))
@@ -60,7 +63,9 @@ func (m *Manager) connect(pi peer.AddrInfo) {
 
 	err := m.host.Connect(context.Background(), pi)
 	if err != nil {
-		fmt.Println("Connection failed:", err)
+		m.logger.Error("connection failed", observability.Fields{
+			"error": err,
+		})
 		return
 	}
 }

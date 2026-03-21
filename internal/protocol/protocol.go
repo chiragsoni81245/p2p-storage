@@ -3,12 +3,12 @@ package protocol
 import (
 	"context"
 	"encoding/json"
-	"fmt"
 	"io"
 	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/core"
 	"github.com/chiragsoni81245/p2p-storage/internal/middleware"
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -18,15 +18,17 @@ import (
 type Protocol struct {
 	host    host.Host
 	cfg     Config
+	logger  *observability.Logger
 	handler core.Handler
 	id      protocol.ID
 	limiter *middleware.Limiter
 }
 
-func New(host host.Host, protocolID protocol.ID, handler core.Handler, cfg Config, limiter *middleware.Limiter) *Protocol {
+func New(host host.Host, protocolID protocol.ID, handler core.Handler, cfg Config, logger *observability.Logger, limiter *middleware.Limiter) *Protocol {
 	p := &Protocol{
 		host:    host,
 		cfg:     cfg,
+		logger:  logger,
 		handler: handler,
 		id:      protocolID,
 		limiter: limiter,
@@ -43,7 +45,7 @@ func (p *Protocol) handleStream(s network.Stream) {
 		This make sure we do not spin too much gorutines at same time
 	*/
 	if !p.limiter.Acquire() {
-		fmt.Println("Dropping request: overloaded")
+		p.logger.Info("Dropping request: overloaded", observability.Fields{})
 		_ = s.Reset() // aggressively close
 		return
 	}
@@ -62,7 +64,9 @@ func (p *Protocol) handleStream(s network.Stream) {
 
 	var msg Message
 	if err := decoder.Decode(&msg); err != nil {
-		fmt.Println("decode error:", err)
+		p.logger.Error("decode error", observability.Fields{
+			"error": err,
+		})
 		return
 	}
 
@@ -79,7 +83,9 @@ func (p *Protocol) handleStream(s network.Stream) {
 		msg,
 	)
 	if err != nil {
-		fmt.Println("handler error:", err)
+		p.logger.Error("handler error", observability.Fields{
+			"error": err,
+		})
 		return
 	}
 
@@ -88,7 +94,9 @@ func (p *Protocol) handleStream(s network.Stream) {
 
 	encoder := json.NewEncoder(s)
 	if err := encoder.Encode(resp); err != nil {
-		fmt.Println("encode error:", err)
+		p.logger.Error("encode error", observability.Fields{
+			"error": err,
+		})
 		return
 	}
 }

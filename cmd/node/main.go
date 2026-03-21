@@ -12,10 +12,14 @@ import (
 	"github.com/chiragsoni81245/p2p-storage/internal/middleware"
 	"github.com/chiragsoni81245/p2p-storage/internal/network"
 	"github.com/chiragsoni81245/p2p-storage/internal/node"
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 	"github.com/chiragsoni81245/p2p-storage/internal/protocol"
 )
 
 func main() {
+	logger := observability.NewLogger(observability.Fields{})
+	metrics := observability.NewMetrics()
+
 	cfg := node.DefaultConfig()
 
 	// Event bus to handle event pipelines
@@ -26,13 +30,15 @@ func main() {
 		log.Fatal(err)
 	}
 
-	fmt.Println("Node started:", n.ID())
+	logger.Info("Node started", observability.Fields{"node_id": n.ID})
 	for _, addr := range n.Addrs() {
-		fmt.Printf("%s/p2p/%s\n", addr, n.ID())
+		logger.Info("peer address", observability.Fields{
+			"address": fmt.Sprintf("%s/p2p/%s\n", addr, n.ID()),
+		})
 	}
 
 	// Attach network manager to control connections
-	network.NewManager(cfg, n, bus)
+	network.NewManager(cfg, logger, n, bus)
 	
 	// Start discovery
 	if err := discovery.StartMDNS(n, bus, "p2p-storage"); err != nil {
@@ -40,7 +46,9 @@ func main() {
 	}
 
 	// Initial handler which will control app working
-	var handler core.Handler = &protocol.PingHandler{}
+	var handler core.Handler = &protocol.PingHandler{
+		Logger: logger,
+	}
 
 	// Apply Rate Limiting
 	rl := middleware.NewRateLimiter(
@@ -54,55 +62,74 @@ func main() {
 	limiter := middleware.NewLimiter(100) // Max concurrent request 100
 	scorer := network.NewPeerScorer() // Manage peer score and use best peers
 
-	proto := protocol.New(n, "/app/1.0.0", handler, protocolConfig, limiter)
+	proto := protocol.New(n, "/app/1.0.0", handler, protocolConfig, logger, limiter)
+
+
+	// Some example usage
 
 	go func() {
 		for evt := range bus.Subscribe(event.PeerDiscovered) {
 			pe := evt.Data.(discovery.PeerDiscoveredEvent)
 			peerID := pe.AddrInfo.ID
 
-			fmt.Printf("[%s] Peer discovered\n", peerID)
-
-			scorer.RecordFailure(peerID)
-		}
-	}()
-
-	go func() {
-		for evt := range bus.Subscribe(event.PeerConnected) {
-			pe := evt.Data.(network.PeerEvent)
-			peerID := pe.PeerID
-
-			fmt.Printf("[%s] Disconnect (%s)\n", peerID, pe.Conn.Stat().Direction)
-
-			scorer.RecordFailure(peerID)
-		}
-	}()
-
-	go func() {
-		for evt := range bus.Subscribe(event.PeerConnected) {
-			pe := evt.Data.(network.PeerEvent)
-			peerID := pe.PeerID
-
-			fmt.Printf("[%s] Connected (%s)\n", peerID, pe.Conn.Stat().Direction)
-
-			start := time.Now()
-
-			// This is the point peer touch once its connected successfully
-			resp, err := proto.Send(context.Background(), peerID, protocol.Message{
-				Type: "PING",
+			logger.Info("peer discovered", observability.Fields{
+				"peer": peerID,
 			})
 
-			latency := time.Since(start)
+			scorer.RecordFailure(peerID)
+		}
+	}()
 
-			if err != nil {
-				fmt.Println("send error:", err)
-				scorer.RecordFailure(peerID)
-				continue
-			} else {
-				scorer.RecordSuccess(peerID, latency)
+	go func() {
+		for evt := range bus.Subscribe(event.PeerConnected) {
+			pe := evt.Data.(network.PeerEvent)
+			peerID := pe.PeerID
+
+			logger.Info("peer disconnected", observability.Fields{
+				"peer": peerID,
+				"direction": pe.Conn.Stat().Direction,
+			})
+
+			scorer.RecordFailure(peerID)
+		}
+	}()
+
+	go func() {
+		for evt := range bus.Subscribe(event.PeerConnected) {
+			pe := evt.Data.(network.PeerEvent)
+			peerID := pe.PeerID
+
+			logger.Info("peer connected", observability.Fields{
+				"peer":      peerID,
+				"direction": pe.Conn.Stat().Direction,
+			})
+
+
+			// This is the point peer touch once its connected successfully
+			for range 5 {
+				start := time.Now()
+				resp, err := proto.Send(context.Background(), peerID, protocol.Message{
+					Type: "PING",
+				})
+				latency := time.Since(start)
+
+				if err != nil {
+					logger.Error("send error", observability.Fields{
+						"error": err,
+					})
+					metrics.RecordFailure()
+					scorer.RecordFailure(peerID)
+					continue
+				} else {
+					metrics.RecordRequest(latency)
+					scorer.RecordSuccess(peerID, latency)
+				}
+				logger.Info("peer response", observability.Fields{"response": resp})
+
+				time.Sleep(1*time.Second)
 			}
 
-			fmt.Println("Response:", resp)
+
 		}
 	}()
 

@@ -5,10 +5,13 @@ import (
 	"fmt"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/core"
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-type PingHandler struct{}
+type PingHandler struct{
+	Logger *observability.Logger
+}
 
 func (h *PingHandler) Handle(ctx context.Context, peerID peer.ID, msg core.Message) (core.Message, error) {
 	// Cast to your concrete type
@@ -17,7 +20,10 @@ func (h *PingHandler) Handle(ctx context.Context, peerID peer.ID, msg core.Messa
 		return nil, fmt.Errorf("invalid message type")
 	}
 
-	fmt.Println("Received from", peerID, ":", m.Type)
+	h.Logger.Info("message received", observability.Fields{
+		"type": m.Type,
+		"peer_id": peerID,
+	})
 
 	return Message{
 		Type: "PONG",
