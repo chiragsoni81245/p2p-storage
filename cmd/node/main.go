@@ -58,8 +58,8 @@ func main() {
 
 	go func() {
 		for evt := range bus.Subscribe(event.PeerDiscovered) {
-			pe := evt.Data.(network.PeerEvent)
-			peerID := pe.PeerID
+			pe := evt.Data.(discovery.PeerDiscoveredEvent)
+			peerID := pe.AddrInfo.ID
 
 			fmt.Printf("[%s] Peer discovered\n", peerID)
 
