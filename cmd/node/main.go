@@ -4,9 +4,11 @@ import (
 	"context"
 	"fmt"
 	"log"
+	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/discovery"
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
+	"github.com/chiragsoni81245/p2p-storage/internal/middleware"
 	"github.com/chiragsoni81245/p2p-storage/internal/network"
 	"github.com/chiragsoni81245/p2p-storage/internal/node"
 	"github.com/chiragsoni81245/p2p-storage/internal/protocol"
@@ -33,14 +35,25 @@ func main() {
 
 	bus := event.NewBus()
 
-	network.NewManager(n, bus, cfg.MaxConnection)
+	network.NewManager(&cfg, n, bus)
 	
 	// Start discovery
 	if err := discovery.StartMDNS(n, bus, "p2p-storage"); err != nil {
 		log.Fatal(err)
 	}
 
-	proto := protocol.New(n, "/app/1.0.0", &protocol.PingHandler{})
+	var handler protocol.Handler
+	handler = &protocol.PingHandler{}
+
+	// Apply Rate Limiting
+	rl := middleware.NewRateLimiter(
+		10,             // max 10 requests
+		time.Second,    // per second
+		5*time.Minute,  // cleanup inactive peers
+	)
+	handler = rl.Wrap(handler)
+
+	proto := protocol.New(n, "/app/1.0.0", handler)
 
 	go func() {
 		ch := bus.Subscribe(event.PeerConnected)
