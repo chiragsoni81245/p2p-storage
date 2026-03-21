@@ -5,9 +5,19 @@ import (
 
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
+	connmgr "github.com/libp2p/go-libp2p/p2p/net/connmgr"
 )
 
 func NewNode(cfg Config) (host.Host, error) {
+	cm, err := connmgr.NewConnManager(
+		cfg.MinConnection,  // low watermark
+		cfg.MaxConnection,  // high watermark
+	)
+
+	if err != nil {
+		return nil, err
+	}
+
 	node, err := libp2p.New(
 		libp2p.ListenAddrStrings(
 			fmt.Sprintf("/ip4/0.0.0.0/tcp/%d", cfg.ListenPort),
@@ -17,6 +27,9 @@ func NewNode(cfg Config) (host.Host, error) {
 		libp2p.DefaultTransports,
 		libp2p.DefaultSecurity,
 		libp2p.DefaultMuxers,
+
+		// Conn Manager
+		libp2p.ConnectionManager(cm),
 
 		// Helps with NAT
 		libp2p.NATPortMap(),

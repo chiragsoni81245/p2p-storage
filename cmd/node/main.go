@@ -16,6 +16,8 @@ import (
 func main() {
 	cfg := node.Config{
 		ListenPort: 0,
+		MinConnection: 50,
+		MaxConnection: 100,
 	}
 
 	n, err := node.NewNode(cfg)
@@ -31,7 +33,7 @@ func main() {
 
 	bus := event.NewBus()
 
-	network.NewManager(n, bus)
+	network.NewManager(n, bus, cfg.MaxConnection)
 	
 	// Start discovery
 	if err := discovery.StartMDNS(n, bus, "p2p-storage"); err != nil {
