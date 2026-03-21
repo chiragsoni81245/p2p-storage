@@ -1,12 +1,15 @@
 package event
 
-import "sync"
+import (
+	"sync"
+)
 
 type EventType string
 
 const (
 	PeerDiscovered EventType = "peer:discovered"
 	PeerConnected  EventType = "peer:connected"
+	PeerDisconnected EventType = "peer:disconnected"
 )
 
 type Event struct {

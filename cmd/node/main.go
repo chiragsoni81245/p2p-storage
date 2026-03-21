@@ -13,11 +13,13 @@ import (
 	"github.com/chiragsoni81245/p2p-storage/internal/network"
 	"github.com/chiragsoni81245/p2p-storage/internal/node"
 	"github.com/chiragsoni81245/p2p-storage/internal/protocol"
-	"github.com/libp2p/go-libp2p/core/peer"
 )
 
 func main() {
 	cfg := node.DefaultConfig()
+
+	// Event bus to handle event pipelines
+	bus := event.NewBus()
 
 	n, err := node.NewNode(cfg)
 	if err != nil {
@@ -25,13 +27,11 @@ func main() {
 	}
 
 	fmt.Println("Node started:", n.ID())
-
 	for _, addr := range n.Addrs() {
 		fmt.Printf("%s/p2p/%s\n", addr, n.ID())
 	}
 
-	bus := event.NewBus()
-
+	// Attach network manager to control connections
 	network.NewManager(cfg, n, bus)
 	
 	// Start discovery
@@ -39,8 +39,8 @@ func main() {
 		log.Fatal(err)
 	}
 
-	var handler core.Handler
-	handler = &protocol.PingHandler{}
+	// Initial handler which will control app working
+	var handler core.Handler = &protocol.PingHandler{}
 
 	// Apply Rate Limiting
 	rl := middleware.NewRateLimiter(
@@ -52,21 +52,54 @@ func main() {
 
 	protocolConfig := protocol.DefaultConfig()
 	limiter := middleware.NewLimiter(100) // Max concurrent request 100
+	scorer := network.NewPeerScorer() // Manage peer score and use best peers
+
 	proto := protocol.New(n, "/app/1.0.0", handler, protocolConfig, limiter)
 
 	go func() {
-		ch := bus.Subscribe(event.PeerConnected)
+		for evt := range bus.Subscribe(event.PeerDiscovered) {
+			pe := evt.Data.(network.PeerEvent)
+			peerID := pe.PeerID
 
-		for evt := range ch {
-			pi := evt.Data.(peer.AddrInfo)
+			fmt.Printf("[%s] Peer discovered\n", peerID)
+
+			scorer.RecordFailure(peerID)
+		}
+	}()
+
+	go func() {
+		for evt := range bus.Subscribe(event.PeerConnected) {
+			pe := evt.Data.(network.PeerEvent)
+			peerID := pe.PeerID
+
+			fmt.Printf("[%s] Peer disconnected\n", peerID)
+
+			scorer.RecordFailure(peerID)
+		}
+	}()
+
+	go func() {
+		for evt := range bus.Subscribe(event.PeerConnected) {
+			pe := evt.Data.(network.PeerEvent)
+			peerID := pe.PeerID
+
+			fmt.Printf("[%s] Peer connected\n", peerID)
+
+			start := time.Now()
 
 			// This is the point peer touch once its connected successfully
-			resp, err := proto.Send(context.Background(), pi.ID, protocol.Message{
+			resp, err := proto.Send(context.Background(), peerID, protocol.Message{
 				Type: "PING",
 			})
+
+			latency := time.Since(start)
+
 			if err != nil {
 				fmt.Println("send error:", err)
+				scorer.RecordFailure(peerID)
 				continue
+			} else {
+				scorer.RecordSuccess(peerID, latency)
 			}
 
 			fmt.Println("Response:", resp)

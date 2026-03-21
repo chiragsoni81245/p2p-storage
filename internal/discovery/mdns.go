@@ -1,8 +1,6 @@
 package discovery
 
 import (
-	"fmt"
-
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
@@ -15,16 +13,16 @@ type Notifee struct {
 }
 
 func (n *Notifee) HandlePeerFound(pi peer.AddrInfo) {
-	// 🚫 Ignore self
+	// Ignore self
 	if pi.ID == n.Host.ID() {
 		return
 	}
 
-	fmt.Println("Discovered peer:", pi.ID)
-
 	n.Bus.Publish(event.Event{
 		Type: event.PeerDiscovered,
-		Data: pi,
+		Data: PeerDiscoveredEvent{
+			AddrInfo: pi,
+		},
 	})
 }
 

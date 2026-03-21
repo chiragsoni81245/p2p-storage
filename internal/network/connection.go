@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 
+	"github.com/chiragsoni81245/p2p-storage/internal/discovery"
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
 	"github.com/chiragsoni81245/p2p-storage/internal/node"
 
@@ -25,6 +26,8 @@ func NewManager(cfg node.Config, h host.Host, bus *event.Bus) *Manager {
 		cfg:  cfg,
 	}
 
+	h.Network().Notify(NewNotifier(bus))
+
 	go m.listen()
 
 	return m
@@ -34,9 +37,9 @@ func (m *Manager) listen() {
 	ch := m.bus.Subscribe(event.PeerDiscovered)
 
 	for evt := range ch {
-		pi := evt.Data.(peer.AddrInfo)
+		event := evt.Data.(discovery.PeerDiscoveredEvent)
 
-		go m.connect(pi)
+		go m.connect(event.AddrInfo)
 	}
 }
 
@@ -55,18 +58,9 @@ func (m *Manager) connect(pi peer.AddrInfo) {
 		return
 	}
 
-	fmt.Println("Connecting to:", pi.ID)
-
 	err := m.host.Connect(context.Background(), pi)
 	if err != nil {
 		fmt.Println("Connection failed:", err)
 		return
 	}
-
-	fmt.Println("Connected to:", pi.ID)
-
-	m.bus.Publish(event.Event{
-		Type: event.PeerConnected,
-		Data: pi,
-	})
 }
