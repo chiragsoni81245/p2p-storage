@@ -72,7 +72,7 @@ func main() {
 			pe := evt.Data.(network.PeerEvent)
 			peerID := pe.PeerID
 
-			fmt.Printf("[%s] Peer disconnected\n", peerID)
+			fmt.Printf("[%s] Disconnect (%s)\n", peerID, pe.Conn.Stat().Direction)
 
 			scorer.RecordFailure(peerID)
 		}
@@ -83,7 +83,7 @@ func main() {
 			pe := evt.Data.(network.PeerEvent)
 			peerID := pe.PeerID
 
-			fmt.Printf("[%s] Peer connected\n", peerID)
+			fmt.Printf("[%s] Connected (%s)\n", peerID, pe.Conn.Stat().Direction)
 
 			start := time.Now()
 
