@@ -108,3 +108,9 @@ func (rl *RateLimiter) cleanup() {
 		}
 	}
 }
+
+// Stop gracefully shuts down the rate limiter's cleanup goroutine.
+// Should be called when the rate limiter is no longer needed.
+func (rl *RateLimiter) Stop() {
+	close(rl.stopChan)
+}

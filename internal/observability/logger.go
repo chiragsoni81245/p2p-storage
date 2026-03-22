@@ -2,6 +2,7 @@ package observability
 
 import (
 	"encoding/json"
+	"io"
 	"os"
 	"time"
 )
@@ -9,13 +10,21 @@ import (
 type Fields map[string]any
 
 type Logger struct {
-	out    *os.File
+	out    io.Writer
 	fields Fields // static fields
 }
 
 func NewLogger(fields Fields) *Logger {
 	return &Logger{
-		out: os.Stdout,
+		out:    os.Stdout,
+		fields: fields,
+	}
+}
+
+// NewLoggerWithWriter creates a logger with a custom writer (for testing)
+func NewLoggerWithWriter(w io.Writer, fields Fields) *Logger {
+	return &Logger{
+		out:    w,
 		fields: fields,
 	}
 }
