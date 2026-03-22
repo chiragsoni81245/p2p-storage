@@ -9,6 +9,7 @@ import (
 	"io"
 	"log"
 	"os"
+	"path/filepath"
 	"strings"
 )
 
@@ -79,19 +80,46 @@ type StoreOpts struct {
 	// Root is the path of the folder which will contain all the files and directories of that store
 	Root              string
 	PathTransformFunc PathTransformFunc
+	// Encryption configuration (optional)
+	Encryption EncryptionConfig
 }
 
 type Store struct {
 	StoreOpts
+	encryptionKey []byte // nil if encryption is disabled
 }
 
-func NewStore(opts StoreOpts) *Store {
+func NewStore(opts StoreOpts) (*Store, error) {
 	if opts.PathTransformFunc == nil {
 		opts.PathTransformFunc = DefaultPathTranformFunc
 	}
-	return &Store{
+
+	s := &Store{
 		StoreOpts: opts,
 	}
+
+	// Initialize encryption if enabled
+	if opts.Encryption.Enabled {
+		keyPath := opts.Encryption.KeyPath
+		if keyPath == "" {
+			// Default key path relative to storage root
+			keyPath = filepath.Join(opts.Root, ".encryption_key")
+		}
+
+		key, err := loadOrCreateEncryptionKey(keyPath)
+		if err != nil {
+			return nil, fmt.Errorf("encryption enabled but failed to initialize: %w", err)
+		}
+		s.encryptionKey = key
+		log.Printf("encryption enabled for store at %s", opts.Root)
+	}
+
+	return s, nil
+}
+
+// IsEncryptionEnabled returns whether encryption is active for this store
+func (s *Store) IsEncryptionEnabled() bool {
+	return s.encryptionKey != nil
 }
 
 func (s *Store) getAbsolutePath(path string) string {
@@ -144,14 +172,30 @@ func (s *Store) Read(key string) (io.Reader, int64, error) {
 	if err != nil {
 		return nil, 0, err
 	}
-	defer func() {
-		f.Close()
-	}()
 
-	// To-Do
-	// Here we are copying the whole file into a buffer
-	// which will not work well with big files so we need to
-	// find a better way to do this
+	// If encryption is enabled, use streaming decryption
+	if s.IsEncryptionEnabled() {
+		// We need to read into a buffer because the decrypting reader
+		// needs the file to stay open, and we're returning a reader.
+		// Use streaming decryption to avoid loading entire ciphertext at once.
+		decReader, err := newDecryptingReader(s.encryptionKey, f)
+		if err != nil {
+			f.Close()
+			return nil, 0, fmt.Errorf("failed to create decrypting reader: %w", err)
+		}
+
+		// Read decrypted content into buffer (streaming chunk by chunk)
+		buf := new(bytes.Buffer)
+		n, err := io.Copy(buf, decReader)
+		f.Close()
+		if err != nil {
+			return nil, 0, fmt.Errorf("failed to decrypt file: %w", err)
+		}
+		return buf, n, nil
+	}
+
+	// Non-encrypted: read into buffer
+	defer f.Close()
 	buf := new(bytes.Buffer)
 	_, err = io.Copy(buf, f)
 	if err != nil {
@@ -162,7 +206,76 @@ func (s *Store) Read(key string) (io.Reader, int64, error) {
 }
 
 func (s *Store) Write(key string, r io.Reader) (size int64, err error) {
+	// If encryption is enabled, use streaming encryption
+	if s.IsEncryptionEnabled() {
+		return s.writeStreamEncrypted(key, r)
+	}
+
 	return s.writeStream(key, r)
+}
+
+// ReadRaw reads the raw bytes from storage without decryption.
+// Use this for network transfers where the encrypted content should be sent as-is.
+func (s *Store) ReadRaw(key string) (io.Reader, int64, error) {
+	if !s.Has(key) {
+		return nil, 0, fmt.Errorf("file not found")
+	}
+	f, fi, err := s.readStream(key)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	// Read raw bytes into buffer (no decryption)
+	defer f.Close()
+	buf := new(bytes.Buffer)
+	_, err = io.Copy(buf, f)
+	if err != nil {
+		return nil, 0, err
+	}
+
+	return buf, (*fi).Size(), nil
+}
+
+// WriteRaw writes raw bytes to storage without encryption.
+// Use this for storing files received from network that are already encrypted.
+func (s *Store) WriteRaw(key string, r io.Reader) (size int64, err error) {
+	return s.writeStream(key, r)
+}
+
+// writeStreamEncrypted writes data with streaming encryption
+func (s *Store) writeStreamEncrypted(key string, r io.Reader) (int64, error) {
+	pathKey := s.PathTransformFunc(key)
+
+	if err := os.MkdirAll(s.getAbsolutePath(pathKey.Path), os.ModePerm); err != nil {
+		return 0, err
+	}
+
+	filePath := s.getAbsolutePath(pathKey.GetFilePath())
+	f, err := os.Create(filePath)
+	if err != nil {
+		return 0, err
+	}
+	defer f.Close()
+
+	// Create encrypting writer
+	encWriter, err := newEncryptingWriter(s.encryptionKey, f)
+	if err != nil {
+		return 0, fmt.Errorf("failed to create encrypting writer: %w", err)
+	}
+
+	// Stream data through encrypting writer
+	n, err := io.Copy(encWriter, r)
+	if err != nil {
+		return 0, fmt.Errorf("failed to write encrypted data: %w", err)
+	}
+
+	// Flush remaining data
+	if err := encWriter.Close(); err != nil {
+		return 0, fmt.Errorf("failed to finalize encryption: %w", err)
+	}
+
+	log.Printf("written (%d) bytes encrypted to disk: %s", n, filePath)
+	return n, nil
 }
 
 func (s *Store) readStream(key string) (*os.File, *os.FileInfo, error) {

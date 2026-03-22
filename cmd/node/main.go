@@ -52,8 +52,9 @@ var storeCmd = &cobra.Command{
 
 The file will be distributed to all connected peers.
 Returns the file key which can be used to retrieve it later.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runStore,
+	Args:         cobra.ExactArgs(1),
+	RunE:         runStore,
+	SilenceUsage: true,
 	Example: `  p2p-storage store ./myfile.txt
   p2p-storage store -s ./data ./document.pdf`,
 }
@@ -66,8 +67,9 @@ var getCmd = &cobra.Command{
 
 If the file exists locally, it will be copied to the output path.
 Otherwise, it will be fetched from connected peers.`,
-	Args: cobra.RangeArgs(1, 2),
-	RunE: runGet,
+	Args:         cobra.RangeArgs(1, 2),
+	RunE:         runGet,
+	SilenceUsage: true,
 	Example: `  p2p-storage get abc123...def ./output.txt
   p2p-storage get abc123...def`,
 }
@@ -80,9 +82,10 @@ var getFileKeyCmd = &cobra.Command{
 
 This key can be used to retrieve the file from the network
 after it has been stored by any peer.`,
-	Args:    cobra.ExactArgs(1),
-	RunE:    runGetFileKey,
-	Example: `  p2p-storage get-file-key ./myfile.txt`,
+	Args:         cobra.ExactArgs(1),
+	RunE:         runGetFileKey,
+	SilenceUsage: true,
+	Example:      `  p2p-storage get-file-key ./myfile.txt`,
 }
 
 // daemonCmd runs the node as a daemon
@@ -93,7 +96,8 @@ var daemonCmd = &cobra.Command{
 
 The daemon will accept connections from other peers
 and serve stored files on request.`,
-	RunE: runDaemon,
+	RunE:         runDaemon,
+	SilenceUsage: true,
 	Example: `  p2p-storage daemon
   p2p-storage -s ./data daemon`,
 }
@@ -134,7 +138,7 @@ func startFileServer() (*fileserver.FileServer, func(), error) {
 		return nil, nil, err
 	}
 
-	fs := fileserver.NewFileServer(fileserver.FileServerOpts{
+	fs, err := fileserver.NewFileServer(fileserver.FileServerOpts{
 		StorageRoot:       storageRoot,
 		PathTransformFunc: store.CASPathTransformFunc,
 		LogWriter:         logWriter,
@@ -142,8 +146,16 @@ func startFileServer() (*fileserver.FileServer, func(), error) {
 			NodeConfig:        node.DefaultConfig(),
 			ProtocolConfig:    protocol.DefaultConfig(),
 			RateLimiterConfig: middleware.DefaultRateLimiterConfig(),
+			Encryption: store.EncryptionConfig{
+				Enabled: true,
+				KeyPath: "./encryption.key",
+			},
 		},
 	})
+	if err != nil {
+		closeLog()
+		return nil, nil, fmt.Errorf("failed to create file server: %w", err)
+	}
 
 	if err := fs.Start(); err != nil {
 		closeLog()
@@ -213,23 +225,25 @@ func runStore(cmd *cobra.Command, args []string) error {
 	defer closeLog()
 	defer fs.Stop()
 
-	// Wait for peers
+	// Wait for peers (but don't fail if none - file will still be stored locally)
 	peerCount := waitForPeers(fs)
-	if peerCount == 0 {
-		return fmt.Errorf("no peers available to store file")
-	}
 
-	fmt.Printf("\nStoring to %d peer(s)...\n", peerCount)
+	fmt.Println("\nStoring file...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	count, err := fs.StoreFileToNetwork(ctx, key, filePath, peerCount)
+	count, err := fs.StoreFile(ctx, key, filePath, peerCount)
 	if err != nil {
 		return fmt.Errorf("failed to store file: %w", err)
 	}
 
-	fmt.Printf("\n✓ Stored to %d peer(s)\n", count)
+	fmt.Println("\n✓ Stored locally")
+	if count > 0 {
+		fmt.Printf("✓ Replicated to %d peer(s)\n", count)
+	} else if peerCount == 0 {
+		fmt.Println("⚠ No peers available for replication")
+	}
 	fmt.Printf("\nTo retrieve this file, use:\n  p2p-storage get %s\n", key)
 
 	return nil
@@ -252,12 +266,8 @@ func runGet(cmd *cobra.Command, args []string) error {
 	defer closeLog()
 	defer fs.Stop()
 
-	// Check if file exists locally
-	if fs.HasFile(key) {
-		fmt.Println("File found locally")
-		return nil
-	} else {
-		// Wait for peers
+	// Check if file exists locally, otherwise wait for peers
+	if !fs.HasFile(key) {
 		peerCount := waitForPeers(fs)
 		if peerCount == 0 {
 			return fmt.Errorf("no peers available and file not found locally")
@@ -268,7 +278,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), timeout)
 	defer cancel()
 
-	if err := fs.GetFileFromNetwork(ctx, key, outputPath); err != nil {
+	if err := fs.GetFile(ctx, key, outputPath); err != nil {
 		return fmt.Errorf("failed to get file: %w", err)
 	}
 

@@ -27,6 +27,7 @@ type FileServerOpts struct {
 	PathTransformFunc store.PathTransformFunc
 	LogWriter         io.Writer // Log output writer (defaults to os.Stdout if nil)
 	Config            config.Config
+	Encryption        *store.EncryptionConfig // Encryption config (enabled by default if nil)
 }
 
 type Peer struct {
@@ -61,10 +62,17 @@ func (fs *FileServer) Handle(ctx context.Context, peerID peer.ID, msg core.Messa
 	return fs.handleMessage(peerID, msg)
 }
 
-func NewFileServer(opts FileServerOpts) *FileServer {
+func NewFileServer(opts FileServerOpts) (*FileServer, error) {
+	// Default encryption to enabled
+	encryption := store.EncryptionConfig{Enabled: true}
+	if opts.Encryption != nil {
+		encryption = *opts.Encryption
+	}
+
 	storeOpts := store.StoreOpts{
 		Root:              opts.StorageRoot,
 		PathTransformFunc: opts.PathTransformFunc,
+		Encryption:        encryption,
 	}
 
 	// Use provided log writer or default to stdout
@@ -78,9 +86,14 @@ func NewFileServer(opts FileServerOpts) *FileServer {
 	bus := event.NewBus()
 	scorer := network.NewPeerScorer() // Manage peer score and use best peers
 
+	s, err := store.NewStore(storeOpts)
+	if err != nil {
+		return nil, fmt.Errorf("failed to create store: %w", err)
+	}
+
 	return &FileServer{
 		FileServerOpts: opts,
-		store:          store.NewStore(storeOpts),
+		store:          s,
 		quitch:         make(chan struct{}),
 		peers:          make(map[string]Peer),
 		logger:         logger,
@@ -88,7 +101,7 @@ func NewFileServer(opts FileServerOpts) *FileServer {
 		bus:            bus,
 		scorer:         scorer,
 		waiters:        make(map[string][]chan error),
-	}
+	}, nil
 }
 
 func (fs *FileServer) getPeer(id string) (Peer, error) {
@@ -263,7 +276,8 @@ func (fs *FileServer) handleGetFileMessage(peerID peer.ID, key string) (core.Mes
 		return protocol.Message{Type: protocol.TypeGetFileResp, Key: key, Data: protocol.DataNotFound}, nil
 	}
 
-	// Read file from store
+	// Read decrypted file from store for network transfer
+	// Peer will re-encrypt with their own key when storing
 	r, size, err := fs.store.Read(key)
 	if err != nil {
 		fs.logger.Error("failed to read file from store", observability.Fields{
@@ -326,32 +340,23 @@ func (fs *FileServer) GetConnectedPeers() int {
 	return len(fs.peers)
 }
 
-// StoreFileToPeer sends a file to a specific peer for storage
-// It first sends a store request, then opens a transfer stream to send the file data
-func (fs *FileServer) StoreFileToPeer(ctx context.Context, peerID peer.ID, key string, filePath string) error {
-	// Open the file
-	file, err := os.Open(filePath)
+// StoreFileToPeer sends a file from local storage to a specific peer
+// The file is decrypted before sending so the peer can re-encrypt with their own key
+func (fs *FileServer) StoreFileToPeer(ctx context.Context, peerID peer.ID, key string) error {
+	// Read decrypted file from local storage
+	r, size, err := fs.store.Read(key)
 	if err != nil {
-		return fmt.Errorf("failed to open file: %w", err)
+		return fmt.Errorf("failed to read file from local storage: %w", err)
 	}
-	defer file.Close()
-
-	// Get file size
-	stat, err := file.Stat()
-	if err != nil {
-		return fmt.Errorf("failed to stat file: %w", err)
-	}
-	size := stat.Size()
 
 	fs.logger.Info("storing file to peer", observability.Fields{
 		"peer": peerID.String(),
 		"key":  key,
 		"size": size,
-		"path": filePath,
 	})
 
 	// Send the file via transfer protocol
-	if err := fs.transferHandler.SendFile(ctx, peerID, key, file, size); err != nil {
+	if err := fs.transferHandler.SendFile(ctx, peerID, key, r, size); err != nil {
 		return fmt.Errorf("failed to transfer file: %w", err)
 	}
 
@@ -364,8 +369,9 @@ func (fs *FileServer) StoreFileToPeer(ctx context.Context, peerID peer.ID, key s
 }
 
 // StoreFileToNetwork stores a file to multiple peers in the network
+// Reads from local storage using ReadRaw to send encrypted bytes
 // Returns the number of successful stores and any errors
-func (fs *FileServer) StoreFileToNetwork(ctx context.Context, key string, filePath string, replicationFactor int) (int, error) {
+func (fs *FileServer) StoreFileToNetwork(ctx context.Context, key string, replicationFactor int) (int, error) {
 	peers := fs.ListPeers()
 	if len(peers) == 0 {
 		return 0, fmt.Errorf("no connected peers")
@@ -380,7 +386,7 @@ func (fs *FileServer) StoreFileToNetwork(ctx context.Context, key string, filePa
 	var lastErr error
 
 	for i := 0; i < replicationFactor && i < len(peers); i++ {
-		if err := fs.StoreFileToPeer(ctx, peers[i], key, filePath); err != nil {
+		if err := fs.StoreFileToPeer(ctx, peers[i], key); err != nil {
 			fs.logger.Error("failed to store file to peer", observability.Fields{
 				"peer":  peers[i].String(),
 				"key":   key,
@@ -397,6 +403,39 @@ func (fs *FileServer) StoreFileToNetwork(ctx context.Context, key string, filePa
 	}
 
 	return successCount, nil
+}
+
+// StoreFile stores a file locally first, then propagates to the network
+// Returns the number of peers the file was stored to (doesn't count local)
+func (fs *FileServer) StoreFile(ctx context.Context, key string, filePath string, replicationFactor int) (int, error) {
+	// Store locally first if we don't have it
+	if !fs.store.Has(key) {
+		file, err := os.Open(filePath)
+		if err != nil {
+			return 0, fmt.Errorf("failed to open file: %w", err)
+		}
+		defer file.Close()
+
+		if _, err := fs.store.Write(key, file); err != nil {
+			return 0, fmt.Errorf("failed to store file locally: %w", err)
+		}
+
+		fs.logger.Info("file stored locally", observability.Fields{
+			"key":  key,
+			"path": filePath,
+		})
+	} else {
+		fs.logger.Info("file already exists locally", observability.Fields{"key": key})
+	}
+
+	// Propagate to network
+	peers := fs.ListPeers()
+	if len(peers) == 0 {
+		fs.logger.Info("no peers available, file stored locally only", observability.Fields{"key": key})
+		return 0, nil
+	}
+
+	return fs.StoreFileToNetwork(ctx, key, replicationFactor)
 }
 
 // GetFileFromPeer requests a file from a specific peer
@@ -451,6 +490,7 @@ func (fs *FileServer) GetFileFromPeer(ctx context.Context, peerID peer.ID, key s
 	}
 
 	// If output path is specified, copy from store to output path
+	// File was received decrypted and stored encrypted with our key, so use Read
 	if outputPath != "" {
 		r, _, err := fs.store.Read(key)
 		if err != nil {
@@ -502,6 +542,48 @@ func (fs *FileServer) GetFileFromNetwork(ctx context.Context, key string, output
 // HasFile checks if a file exists locally
 func (fs *FileServer) HasFile(key string) bool {
 	return fs.store.Has(key)
+}
+
+// GetFile gets a file - first checks local storage, then tries network if not found
+// If outputPath is specified, saves the file to that path
+func (fs *FileServer) GetFile(ctx context.Context, key string, outputPath string) error {
+	// Check if file exists locally first
+	if fs.store.Has(key) {
+		fs.logger.Info("file found locally", observability.Fields{"key": key})
+
+		if outputPath != "" {
+			r, _, err := fs.store.Read(key)
+			if err != nil {
+				// Decryption failed - file may have been received from a peer
+				// (encrypted with their key) or stored with a different key
+				fs.logger.Error("failed to decrypt local file, may be from peer", observability.Fields{
+					"key":   key,
+					"error": err.Error(),
+				})
+				return fmt.Errorf("failed to read local file: %w (file may have been received from a peer and encrypted with their key)", err)
+			}
+
+			outFile, err := os.Create(outputPath)
+			if err != nil {
+				return fmt.Errorf("failed to create output file: %w", err)
+			}
+			defer outFile.Close()
+
+			if _, err := io.Copy(outFile, r); err != nil {
+				return fmt.Errorf("failed to write output file: %w", err)
+			}
+
+			fs.logger.Info("local file saved to output path", observability.Fields{
+				"key":  key,
+				"path": outputPath,
+			})
+		}
+		return nil
+	}
+
+	// File not found locally, try network
+	fs.logger.Info("file not found locally, trying network", observability.Fields{"key": key})
+	return fs.GetFileFromNetwork(ctx, key, outputPath)
 }
 
 // GetNodeID returns this node's peer ID

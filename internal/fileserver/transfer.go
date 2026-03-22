@@ -170,7 +170,7 @@ func (fth *FileTransferHandler) handleIncomingStream(s network.Stream) {
 	// Create a limited reader to avoid reading more than expected
 	limitedReader := io.LimitReader(s, fileSize)
 
-	// Write file to store
+	// Write to store - will encrypt with local key
 	written, err := fth.fs.store.Write(key, limitedReader)
 	if err != nil {
 		fth.logger.Error("failed to write file to store", observability.Fields{
