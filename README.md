@@ -67,3 +67,35 @@ internal/
   protocol/       - Protocol definitions
 pkg/logger/       - Logger utilities
 ```
+
+## Testing
+
+Run unit tests:
+
+```bash
+go test -tags=unit ./...
+```
+
+Run integration tests:
+
+```bash
+go test -tags=integration ./...
+```
+
+Run all tests:
+
+```bash
+go test -tags=unit,integration ./...
+```
+
+Run with race detection:
+
+```bash
+go test -race -tags=unit,integration ./...
+```
+
+Run with coverage:
+
+```bash
+go test -cover -tags=unit,integration ./...
+```
