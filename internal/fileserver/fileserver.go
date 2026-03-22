@@ -25,6 +25,7 @@ import (
 type FileServerOpts struct {
 	StorageRoot       string
 	PathTransformFunc store.PathTransformFunc
+	LogWriter         io.Writer // Log output writer (defaults to os.Stdout if nil)
 	Config            config.Config
 }
 
@@ -66,7 +67,13 @@ func NewFileServer(opts FileServerOpts) *FileServer {
 		PathTransformFunc: opts.PathTransformFunc,
 	}
 
-	logger := observability.NewLogger(observability.Fields{})
+	// Use provided log writer or default to stdout
+	logWriter := opts.LogWriter
+	if logWriter == nil {
+		logWriter = os.Stdout
+	}
+
+	logger := observability.NewLoggerWithWriter(logWriter, observability.Fields{})
 	metrics := observability.NewMetrics()
 	bus := event.NewBus()
 	scorer := network.NewPeerScorer() // Manage peer score and use best peers

@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"os/signal"
 	"path/filepath"
@@ -24,6 +25,7 @@ var (
 	storageRoot string
 	peerWait    time.Duration
 	timeout     time.Duration
+	logFile     string
 )
 
 func main() {
@@ -102,6 +104,7 @@ func init() {
 	rootCmd.PersistentFlags().StringVarP(&storageRoot, "storage", "s", "./storage", "storage directory")
 	rootCmd.PersistentFlags().DurationVarP(&peerWait, "wait", "w", 5*time.Second, "time to wait for peer discovery")
 	rootCmd.PersistentFlags().DurationVarP(&timeout, "timeout", "t", 5*time.Minute, "operation timeout")
+	rootCmd.PersistentFlags().StringVarP(&logFile, "log-file", "l", "", "path to log file (default: stdout)")
 
 	// Add commands
 	rootCmd.AddCommand(storeCmd)
@@ -110,11 +113,31 @@ func init() {
 	rootCmd.AddCommand(daemonCmd)
 }
 
+// getLogWriter returns the appropriate log writer based on the logFile flag
+func getLogWriter() (io.Writer, func(), error) {
+	if logFile == "" {
+		return os.Stdout, func() {}, nil
+	}
+
+	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	if err != nil {
+		return nil, nil, fmt.Errorf("failed to open log file: %w", err)
+	}
+
+	return f, func() { f.Close() }, nil
+}
+
 // startFileServer creates and starts the file server
-func startFileServer() (*fileserver.FileServer, error) {
+func startFileServer() (*fileserver.FileServer, func(), error) {
+	logWriter, closeLog, err := getLogWriter()
+	if err != nil {
+		return nil, nil, err
+	}
+
 	fs := fileserver.NewFileServer(fileserver.FileServerOpts{
 		StorageRoot:       storageRoot,
 		PathTransformFunc: store.CASPathTransformFunc,
+		LogWriter:         logWriter,
 		Config: config.Config{
 			NodeConfig:        node.DefaultConfig(),
 			ProtocolConfig:    protocol.DefaultConfig(),
@@ -123,7 +146,8 @@ func startFileServer() (*fileserver.FileServer, error) {
 	})
 
 	if err := fs.Start(); err != nil {
-		return nil, fmt.Errorf("failed to start node: %w", err)
+		closeLog()
+		return nil, nil, fmt.Errorf("failed to start node: %w", err)
 	}
 
 	fmt.Printf("Node ID: %s\n", fs.GetNodeID().String())
@@ -131,7 +155,7 @@ func startFileServer() (*fileserver.FileServer, error) {
 		fmt.Printf("Address: %s\n", addr)
 	}
 
-	return fs, nil
+	return fs, closeLog, nil
 }
 
 // waitForPeers waits for peer discovery
@@ -182,10 +206,11 @@ func runStore(cmd *cobra.Command, args []string) error {
 	fmt.Printf("Key:  %s\n\n", key)
 
 	// Start the file server
-	fs, err := startFileServer()
+	fs, closeLog, err := startFileServer()
 	if err != nil {
 		return err
 	}
+	defer closeLog()
 	defer fs.Stop()
 
 	// Wait for peers
@@ -220,10 +245,11 @@ func runGet(cmd *cobra.Command, args []string) error {
 	}
 
 	// Start the file server
-	fs, err := startFileServer()
+	fs, closeLog, err := startFileServer()
 	if err != nil {
 		return err
 	}
+	defer closeLog()
 	defer fs.Stop()
 
 	// Check if file exists locally
@@ -277,10 +303,11 @@ func runGetFileKey(cmd *cobra.Command, args []string) error {
 func runDaemon(cmd *cobra.Command, args []string) error {
 	fmt.Println("Starting P2P Storage daemon...")
 
-	fs, err := startFileServer()
+	fs, closeLog, err := startFileServer()
 	if err != nil {
 		return err
 	}
+	defer closeLog()
 	defer fs.Stop()
 
 	fmt.Printf("Storage: %s\n", storageRoot)
