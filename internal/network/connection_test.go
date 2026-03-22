@@ -35,12 +35,12 @@ func TestNewManager(t *testing.T) {
 		MaxConnection: 10,
 	}
 
-	manager := NewManager(cfg, logger, h, bus)
+	manager := NewManager(cfg.MaxConnection, logger, h, bus)
 
 	require.NotNil(t, manager)
 	assert.Equal(t, h, manager.host)
 	assert.Equal(t, bus, manager.bus)
-	assert.Equal(t, cfg, manager.cfg)
+	assert.Equal(t, cfg.MaxConnection, manager.maxConnection)
 	assert.Equal(t, logger, manager.logger)
 }
 
@@ -58,7 +58,7 @@ func TestManager_Connect_OnPeerDiscovered(t *testing.T) {
 	}
 
 	// Create manager for h1
-	_ = NewManager(cfg, logger, h1, bus)
+	_ = NewManager(cfg.MaxConnection, logger, h1, bus)
 
 	// Give the manager's listen goroutine time to start
 	time.Sleep(50 * time.Millisecond)
@@ -102,7 +102,7 @@ func TestManager_Connect_SkipsAlreadyConnected(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create manager
-	_ = NewManager(cfg, logger, h1, bus)
+	_ = NewManager(cfg.MaxConnection, logger, h1, bus)
 
 	// Publish peer discovered event (should be skipped)
 	bus.Publish(event.Event{
@@ -133,7 +133,7 @@ func TestManager_Connect_RespectsMaxConnections(t *testing.T) {
 	}
 
 	// Create manager
-	_ = NewManager(cfg, logger, h1, bus)
+	_ = NewManager(cfg.MaxConnection, logger, h1, bus)
 
 	// Give the manager's listen goroutine time to start
 	time.Sleep(50 * time.Millisecond)
@@ -187,7 +187,7 @@ func TestManager_Connect_HandlesBadAddress(t *testing.T) {
 	}
 
 	// Create manager
-	_ = NewManager(cfg, logger, h1, bus)
+	_ = NewManager(cfg.MaxConnection, logger, h1, bus)
 
 	// Publish discovery event with invalid peer (no addresses or unreachable)
 	fakePeerID, _ := peer.Decode("QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N")

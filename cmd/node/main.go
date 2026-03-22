@@ -284,7 +284,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	defer fs.Stop()
 
 	fmt.Printf("Storage: %s\n", storageRoot)
-	fmt.Println("\nDaemon running. Press Ctrl+C to stop.\n")
+	fmt.Println("\nDaemon running. Press Ctrl+C to stop.")
 
 	// Print status periodically
 	go func() {
