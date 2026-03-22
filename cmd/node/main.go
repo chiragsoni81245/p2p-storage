@@ -7,10 +7,12 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/config"
+	"github.com/chiragsoni81245/p2p-storage/internal/discovery"
 	"github.com/chiragsoni81245/p2p-storage/internal/fileserver"
 	"github.com/chiragsoni81245/p2p-storage/internal/middleware"
 	"github.com/chiragsoni81245/p2p-storage/internal/node"
@@ -21,11 +23,13 @@ import (
 
 var (
 	// Global flags
-	configPath  string
-	storageRoot string
-	peerWait    time.Duration
-	timeout     time.Duration
-	logFile     string
+	configPath     string
+	storageRoot    string
+	peerWait       time.Duration
+	timeout        time.Duration
+	logFile        string
+	discoveryModes string
+	bootstrapPeers []string
 )
 
 func main() {
@@ -109,6 +113,8 @@ func init() {
 	rootCmd.PersistentFlags().DurationVarP(&peerWait, "wait", "w", 5*time.Second, "time to wait for peer discovery")
 	rootCmd.PersistentFlags().DurationVarP(&timeout, "timeout", "t", 5*time.Minute, "operation timeout")
 	rootCmd.PersistentFlags().StringVarP(&logFile, "log-file", "l", "", "path to log file (default: stdout)")
+	rootCmd.PersistentFlags().StringVarP(&discoveryModes, "discovery", "d", "mdns", "discovery methods (comma-separated: mdns,dht,bootstrap)")
+	rootCmd.PersistentFlags().StringSliceVarP(&bootstrapPeers, "bootstrap", "b", []string{}, "bootstrap peer addresses (multiaddr format)")
 
 	// Add commands
 	rootCmd.AddCommand(storeCmd)
@@ -131,6 +137,46 @@ func getLogWriter() (io.Writer, func(), error) {
 	return f, func() { f.Close() }, nil
 }
 
+// buildDiscoveryConfig creates the discovery configuration from CLI flags
+func buildDiscoveryConfig() discovery.Config {
+	cfg := discovery.DefaultConfig()
+
+	// Parse discovery methods
+	methods := []discovery.DiscoveryMethod{}
+	for _, m := range strings.Split(discoveryModes, ",") {
+		m = strings.TrimSpace(strings.ToLower(m))
+		switch m {
+		case "mdns":
+			methods = append(methods, discovery.MethodMDNS)
+		case "dht":
+			methods = append(methods, discovery.MethodDHT)
+		case "bootstrap":
+			methods = append(methods, discovery.MethodBootstrap)
+		}
+	}
+	if len(methods) > 0 {
+		cfg.EnabledMethods = methods
+	}
+
+	// Set bootstrap peers if provided
+	if len(bootstrapPeers) > 0 {
+		cfg.Bootstrap.BootstrapPeers = bootstrapPeers
+		// Automatically enable bootstrap method if peers provided
+		hasBootstrap := false
+		for _, m := range cfg.EnabledMethods {
+			if m == discovery.MethodBootstrap {
+				hasBootstrap = true
+				break
+			}
+		}
+		if !hasBootstrap {
+			cfg.EnabledMethods = append(cfg.EnabledMethods, discovery.MethodBootstrap)
+		}
+	}
+
+	return cfg
+}
+
 // startFileServer creates and starts the file server
 func startFileServer() (*fileserver.FileServer, func(), error) {
 	logWriter, closeLog, err := getLogWriter()
@@ -138,12 +184,15 @@ func startFileServer() (*fileserver.FileServer, func(), error) {
 		return nil, nil, err
 	}
 
+	nodeCfg := node.DefaultConfig()
+	nodeCfg.DiscoveryConfig = buildDiscoveryConfig()
+
 	fs, err := fileserver.NewFileServer(fileserver.FileServerOpts{
 		StorageRoot:       storageRoot,
 		PathTransformFunc: store.CASPathTransformFunc,
 		LogWriter:         logWriter,
 		Config: config.Config{
-			NodeConfig:        node.DefaultConfig(),
+			NodeConfig:        nodeCfg,
 			ProtocolConfig:    protocol.DefaultConfig(),
 			RateLimiterConfig: middleware.DefaultRateLimiterConfig(),
 			Encryption: store.EncryptionConfig{

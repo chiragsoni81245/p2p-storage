@@ -51,6 +51,7 @@ type FileServer struct {
 	scorer          *network.PeerScorer
 	transferHandler *FileTransferHandler
 	proto           *protocol.Protocol
+	discoveryMgr    *discovery.Manager
 
 	// Transfer completion waiters
 	waitersLock sync.Mutex
@@ -146,7 +147,7 @@ func (fs *FileServer) notifyTransferComplete(key string, err error) {
 	delete(fs.waiters, key)
 }
 
-func (fs *FileServer) OnPeer(conn libp2p_network.Conn) {
+func (fs *FileServer) OnPeerConnect(conn libp2p_network.Conn) {
 	fs.peerLock.Lock()
 	defer fs.peerLock.Unlock()
 
@@ -155,6 +156,14 @@ func (fs *FileServer) OnPeer(conn libp2p_network.Conn) {
 		ID:   conn.RemotePeer(),
 		Conn: conn,
 	}
+}
+
+func (fs *FileServer) OnPeerDisconnect(conn libp2p_network.Conn) {
+	fs.peerLock.Lock()
+	defer fs.peerLock.Unlock()
+
+	peerID := conn.RemotePeer().String()
+	delete(fs.peers, peerID)
 }
 
 func (fs *FileServer) Start() error {
@@ -193,7 +202,15 @@ func (fs *FileServer) Start() error {
 	go func() {
 		for evt := range fs.bus.Subscribe(event.PeerConnected) {
 			pe := evt.Data.(network.PeerEvent)
-			fs.OnPeer(pe.Conn)
+			fs.OnPeerConnect(pe.Conn)
+		}
+	}()
+
+	// Listen for peer disconnections and unregister them
+	go func() {
+		for evt := range fs.bus.Subscribe(event.PeerDisconnected) {
+			pe := evt.Data.(network.PeerEvent)
+			fs.OnPeerDisconnect(pe.Conn)
 		}
 	}()
 
@@ -201,17 +218,23 @@ func (fs *FileServer) Start() error {
 	// Must be after subscriptions to ensure events are received
 	network.NewManager(fs.Config.NodeConfig.MaxConnection, fs.logger, node, fs.bus)
 
-	// Start discovery
-	if err := discovery.StartMDNS(node, fs.bus, "storage"); err != nil {
+	// Start discovery with configured methods
+	fs.discoveryMgr = discovery.NewManager(node, fs.bus, fs.Config.NodeConfig.DiscoveryConfig)
+	if err := fs.discoveryMgr.Start(); err != nil {
 		return err
 	}
 
-	fs.logger.Info("Discovery started", observability.Fields{})
+	fs.logger.Info("Discovery started", observability.Fields{
+		"methods": fs.Config.NodeConfig.DiscoveryConfig.EnabledMethods,
+	})
 
 	return nil
 }
 
 func (fs *FileServer) Stop() {
+	if fs.discoveryMgr != nil {
+		fs.discoveryMgr.Stop()
+	}
 	fs.node.Close()
 }
 
