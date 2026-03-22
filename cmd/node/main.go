@@ -104,7 +104,7 @@ func main() {
 
 				if err != nil {
 					logger.Error("send error", observability.Fields{
-						"error": err,
+						"error": err.Error(),
 					})
 					metrics.RecordFailure()
 					scorer.RecordFailure(peerID)

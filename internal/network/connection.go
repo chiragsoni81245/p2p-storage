@@ -14,19 +14,18 @@ import (
 )
 
 type Manager struct {
-	host host.Host
-	bus  *event.Bus
-	cfg  node.Config
+	host   host.Host
+	bus    *event.Bus
+	cfg    node.Config
 	logger *observability.Logger
 }
 
 func NewManager(cfg node.Config, logger *observability.Logger, h host.Host, bus *event.Bus) *Manager {
 	m := &Manager{
-		host: h,
-		bus:  bus,
-		cfg:  cfg,
+		host:   h,
+		bus:    bus,
+		cfg:    cfg,
 		logger: logger,
-
 	}
 
 	h.Network().Notify(NewNotifier(bus))
@@ -55,7 +54,7 @@ func (m *Manager) connect(pi peer.AddrInfo) {
 	if len(m.host.Network().Peers()) >= m.cfg.MaxConnection {
 		/*
 			Stop connecting peers if we already have max connections
-			This is required for admission control as prune will happen after connection cost is paid 
+			This is required for admission control as prune will happen after connection cost is paid
 			so for sudden big spike this is better prevention
 		*/
 		return
@@ -64,7 +63,7 @@ func (m *Manager) connect(pi peer.AddrInfo) {
 	err := m.host.Connect(context.Background(), pi)
 	if err != nil {
 		m.logger.Error("connection failed", observability.Fields{
-			"error": err,
+			"error": err.Error(),
 		})
 		return
 	}

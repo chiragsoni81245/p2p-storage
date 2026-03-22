@@ -51,7 +51,6 @@ func (p *Protocol) handleStream(s network.Stream) {
 	}
 	defer p.limiter.Release()
 
-
 	defer s.Close()
 
 	// Set read deadline
@@ -65,7 +64,7 @@ func (p *Protocol) handleStream(s network.Stream) {
 	var msg Message
 	if err := decoder.Decode(&msg); err != nil {
 		p.logger.Error("decode error", observability.Fields{
-			"error": err,
+			"error": err.Error(),
 		})
 		return
 	}
@@ -84,7 +83,7 @@ func (p *Protocol) handleStream(s network.Stream) {
 	)
 	if err != nil {
 		p.logger.Error("handler error", observability.Fields{
-			"error": err,
+			"error": err.Error(),
 		})
 		return
 	}
@@ -95,7 +94,7 @@ func (p *Protocol) handleStream(s network.Stream) {
 	encoder := json.NewEncoder(s)
 	if err := encoder.Encode(resp); err != nil {
 		p.logger.Error("encode error", observability.Fields{
-			"error": err,
+			"error": err.Error(),
 		})
 		return
 	}
