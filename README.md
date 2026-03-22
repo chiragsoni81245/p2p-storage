@@ -7,7 +7,8 @@ Store and retrieve files across a decentralized network of peers. Files are cont
 ## Features
 
 - **Content-addressed storage** - Files are identified by their SHA256 hash
-- **Peer discovery via mDNS** - Automatic local network peer discovery
+- **AES-256 encryption** - Files encrypted at rest with streaming encryption
+- **Multiple discovery methods** - mDNS (local), DHT (distributed), and bootstrap peers
 - **Connection management** - Configurable connection limits with low/high watermarks
 - **Rate limiting & backpressure** - Protects nodes from overload
 - **Event-driven architecture** - Loosely coupled components
@@ -15,7 +16,7 @@ Store and retrieve files across a decentralized network of peers. Files are cont
 
 ## Requirements
 
-- Go 1.25+
+- Go 1.25.7+
 
 ## Installation
 
@@ -31,7 +32,7 @@ go build -o p2p-storage ./cmd/node
 ```bash
 p2p-storage store <filepath>
 
-# Example
+# Examples
 p2p-storage store ./myfile.txt
 p2p-storage store -s ./data ./document.pdf
 ```
@@ -43,7 +44,7 @@ Distributes the file to all connected peers and returns a key for retrieval.
 ```bash
 p2p-storage get <filekey> [output-path]
 
-# Example
+# Examples
 p2p-storage get abc123...def ./output.txt
 p2p-storage get abc123...def
 ```
@@ -66,8 +67,9 @@ Calculates the storage key for a file without storing it. Useful for scripting.
 ```bash
 p2p-storage daemon
 
-# Example
+# Examples
 p2p-storage -s ./data daemon
+p2p-storage -d mdns,dht daemon
 ```
 
 Starts the node as a background service that accepts connections and serves files.
@@ -80,6 +82,31 @@ Starts the node as a background service that accepts connections and serves file
 | `--storage` | `-s` | `./storage` | Storage directory |
 | `--wait` | `-w` | `5s` | Time to wait for peer discovery |
 | `--timeout` | `-t` | `5m` | Operation timeout |
+| `--log-file` | `-l` | stdout | Path to log file |
+| `--discovery` | `-d` | `mdns` | Discovery methods (comma-separated: mdns, dht, bootstrap) |
+| `--bootstrap` | `-b` | | Bootstrap peer addresses (multiaddr format) |
+
+## Peer Discovery
+
+The node supports multiple discovery methods that can be used together:
+
+- **mDNS** - Automatic local network discovery (default)
+- **DHT** - Kademlia distributed hash table for internet-wide discovery
+- **Bootstrap** - Connect to known peers directly
+
+```bash
+# Local network only (default)
+p2p-storage -d mdns daemon
+
+# DHT for internet-wide discovery
+p2p-storage -d dht daemon
+
+# Connect to specific bootstrap peers
+p2p-storage -b /ip4/192.168.1.100/tcp/4001/p2p/QmPeerID daemon
+
+# Combine multiple methods
+p2p-storage -d mdns,dht -b /ip4/1.2.3.4/tcp/4001/p2p/QmBootstrapPeer daemon
+```
 
 ## Docker
 
@@ -113,6 +140,13 @@ Default settings in `internal/node/config.go`:
 | MaxConnection | 100 | Connection manager high watermark |
 | Concurrency | 10 | Max concurrent request handling |
 
+Encryption settings in `internal/store/encryption.go`:
+
+| Option | Default | Description |
+|--------|---------|-------------|
+| Enabled | true | Enable AES-256 encryption at rest |
+| KeyPath | ./encryption.key | Path to encryption key file |
+
 ## Project Structure
 
 ```
@@ -120,18 +154,24 @@ cmd/node/           - CLI entry point (Cobra commands)
 internal/
   config/           - Configuration aggregation
   core/             - Message handlers
-  discovery/        - Peer discovery (mDNS)
+  discovery/        - Peer discovery (mDNS, DHT, bootstrap)
   event/            - Event bus
   fileserver/       - File storage/retrieval logic
   middleware/       - Rate limiting, backpressure
   network/          - Connection management, peer scoring
   node/             - Node configuration and identity
   observability/    - Logging and metrics
-  protocol/         - Protocol definitions
-  store/            - Content-addressed storage
+  protocol/         - Protocol definitions (ping, file transfer)
+  store/            - Content-addressed storage with encryption
 ```
 
 ## Testing
+
+Run all tests:
+
+```bash
+go test ./...
+```
 
 Run unit tests:
 
@@ -145,20 +185,14 @@ Run integration tests:
 go test -tags=integration ./...
 ```
 
-Run all tests:
-
-```bash
-go test -tags=unit,integration ./...
-```
-
 Run with race detection:
 
 ```bash
-go test -race -tags=unit,integration ./...
+go test -race ./...
 ```
 
 Run with coverage:
 
 ```bash
-go test -cover -tags=unit,integration ./...
+go test -cover ./...
 ```
