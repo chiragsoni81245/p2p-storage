@@ -7,10 +7,11 @@ import (
 	"encoding/hex"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 )
 
 type PathKey struct {
@@ -82,11 +83,14 @@ type StoreOpts struct {
 	PathTransformFunc PathTransformFunc
 	// Encryption configuration (optional)
 	Encryption EncryptionConfig
+	// Logger (optional - uses default if not provided)
+	Logger *observability.Logger
 }
 
 type Store struct {
 	StoreOpts
 	encryptionKey []byte // nil if encryption is disabled
+	logger        *observability.Logger
 }
 
 func NewStore(opts StoreOpts) (*Store, error) {
@@ -94,8 +98,14 @@ func NewStore(opts StoreOpts) (*Store, error) {
 		opts.PathTransformFunc = DefaultPathTranformFunc
 	}
 
+	logger := opts.Logger
+	if logger == nil {
+		logger = observability.NewLogger(observability.Fields{"service": "store"})
+	}
+
 	s := &Store{
 		StoreOpts: opts,
+		logger:    logger,
 	}
 
 	// Initialize encryption if enabled
@@ -111,7 +121,7 @@ func NewStore(opts StoreOpts) (*Store, error) {
 			return nil, fmt.Errorf("encryption enabled but failed to initialize: %w", err)
 		}
 		s.encryptionKey = key
-		log.Printf("encryption enabled for store at %s", opts.Root)
+		s.logger.Info("encryption enabled for store", observability.Fields{"root": opts.Root})
 	}
 
 	return s, nil
@@ -139,7 +149,7 @@ func (s *Store) Has(key string) bool {
 func (s *Store) Delete(key string) error {
 	pathKey := s.PathTransformFunc(key)
 	defer func() {
-		log.Printf("deleted [%s] from disk", s.getAbsolutePath(pathKey.GetFilePath()))
+		s.logger.Debug("deleted file from disk", observability.Fields{"path": s.getAbsolutePath(pathKey.GetFilePath())})
 	}()
 
 	err := os.Remove(s.getAbsolutePath(pathKey.GetFilePath()))
@@ -274,7 +284,7 @@ func (s *Store) writeStreamEncrypted(key string, r io.Reader) (int64, error) {
 		return 0, fmt.Errorf("failed to finalize encryption: %w", err)
 	}
 
-	log.Printf("written (%d) bytes encrypted to disk: %s", n, filePath)
+	s.logger.Debug("written encrypted bytes to disk", observability.Fields{"bytes": n, "path": filePath})
 	return n, nil
 }
 
@@ -308,7 +318,7 @@ func (s *Store) writeStream(key string, r io.Reader) (int64, error) {
 		return 0, err
 	}
 
-	log.Printf("written (%d) bytes to disk: %s", n, filepath)
+	s.logger.Debug("written bytes to disk", observability.Fields{"bytes": n, "path": filepath})
 
 	return n, nil
 }

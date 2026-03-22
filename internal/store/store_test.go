@@ -7,6 +7,8 @@ import (
 	"os"
 	"testing"
 	"time"
+
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 )
 
 func TestPathTransformFunc(t *testing.T) {
@@ -62,9 +64,11 @@ func TestStore(t *testing.T) {
 }
 
 func newStore() *Store {
+	logger := observability.NewLogger(observability.Fields{"service": "store-test"})
 	opts := StoreOpts{
 		Root:              fmt.Sprintf("./storage/%d", time.Now().UnixMilli()),
 		PathTransformFunc: CASPathTransformFunc,
+		Logger:            logger,
 	}
 	s, err := NewStore(opts)
 	if err != nil {
@@ -167,6 +171,7 @@ func TestEncryptedDataIsDifferentFromPlaintext(t *testing.T) {
 func TestEncryptionKeyPersistence(t *testing.T) {
 	root := fmt.Sprintf("./storage/%d_enc_persist", time.Now().UnixMilli())
 	keyPath := root + "/.encryption_key"
+	logger := observability.NewLogger(observability.Fields{"service": "store-test"})
 
 	// Create first store
 	opts := StoreOpts{
@@ -176,6 +181,7 @@ func TestEncryptionKeyPersistence(t *testing.T) {
 			Enabled: true,
 			KeyPath: keyPath,
 		},
+		Logger: logger,
 	}
 	store1, err := NewStore(opts)
 	if err != nil {
@@ -246,6 +252,7 @@ func TestUnencryptedStore(t *testing.T) {
 
 func newStoreWithEncryption() *Store {
 	root := fmt.Sprintf("./storage/%d_enc", time.Now().UnixMilli())
+	logger := observability.NewLogger(observability.Fields{"service": "store-test"})
 	opts := StoreOpts{
 		Root:              root,
 		PathTransformFunc: CASPathTransformFunc,
@@ -253,6 +260,7 @@ func newStoreWithEncryption() *Store {
 			Enabled: true,
 			KeyPath: root + "/.encryption_key",
 		},
+		Logger: logger,
 	}
 	s, err := NewStore(opts)
 	if err != nil {
