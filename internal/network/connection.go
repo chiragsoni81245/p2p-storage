@@ -5,7 +5,6 @@ import (
 
 	"github.com/chiragsoni81245/p2p-storage/internal/discovery"
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
-	"github.com/chiragsoni81245/p2p-storage/internal/node"
 	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 
 	"github.com/libp2p/go-libp2p/core/host"
@@ -14,18 +13,18 @@ import (
 )
 
 type Manager struct {
-	host   host.Host
-	bus    *event.Bus
-	cfg    node.Config
-	logger *observability.Logger
+	host          host.Host
+	bus           *event.Bus
+	maxConnection int
+	logger        *observability.Logger
 }
 
-func NewManager(cfg node.Config, logger *observability.Logger, h host.Host, bus *event.Bus) *Manager {
+func NewManager(maxConnection int, logger *observability.Logger, h host.Host, bus *event.Bus) *Manager {
 	m := &Manager{
-		host:   h,
-		bus:    bus,
-		cfg:    cfg,
-		logger: logger,
+		host:          h,
+		bus:           bus,
+		maxConnection: maxConnection,
+		logger:        logger,
 	}
 
 	h.Network().Notify(NewNotifier(bus))
@@ -51,7 +50,7 @@ func (m *Manager) connect(pi peer.AddrInfo) {
 		return
 	}
 
-	if len(m.host.Network().Peers()) >= m.cfg.MaxConnection {
+	if len(m.host.Network().Peers()) >= m.maxConnection {
 		/*
 			Stop connecting peers if we already have max connections
 			This is required for admission control as prune will happen after connection cost is paid

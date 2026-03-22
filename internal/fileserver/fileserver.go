@@ -6,8 +6,8 @@ import (
 	"io"
 	"os"
 	"sync"
-	"time"
 
+	"github.com/chiragsoni81245/p2p-storage/internal/config"
 	"github.com/chiragsoni81245/p2p-storage/internal/core"
 	"github.com/chiragsoni81245/p2p-storage/internal/discovery"
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
@@ -22,35 +22,10 @@ import (
 	"github.com/libp2p/go-libp2p/core/peer"
 )
 
-type Message struct {
-	Payload any
-}
-
-type MessageGetFile struct {
-	Key string
-}
-
-type MessageStoreFile struct {
-	Key  string
-	Size int64
-}
-
-// Response message types
-
-type MessageStoreFileAck struct {
-	Success bool
-	Error   string
-}
-
-type MessageGetFileResponse struct {
-	Found bool
-	Size  int64
-	Error string
-}
-
 type FileServerOpts struct {
 	StorageRoot       string
 	PathTransformFunc store.PathTransformFunc
+	Config            config.Config
 }
 
 type Peer struct {
@@ -74,16 +49,15 @@ type FileServer struct {
 	scorer          *network.PeerScorer
 	transferHandler *FileTransferHandler
 	proto           *protocol.Protocol
+
+	// Transfer completion waiters
+	waitersLock sync.Mutex
+	waiters     map[string][]chan error
 }
 
-// StorageHandler implements core.Handler for the storage protocol
-type StorageHandler struct {
-	fs     *FileServer
-	Logger *observability.Logger
-}
-
-func (h *StorageHandler) Handle(ctx context.Context, peerID peer.ID, msg core.Message) (core.Message, error) {
-	return h.fs.HandleMessage(peerID, msg)
+// Handle implements core.Handler for the storage protocol
+func (fs *FileServer) Handle(ctx context.Context, peerID peer.ID, msg core.Message) (core.Message, error) {
+	return fs.handleMessage(peerID, msg)
 }
 
 func NewFileServer(opts FileServerOpts) *FileServer {
@@ -106,6 +80,7 @@ func NewFileServer(opts FileServerOpts) *FileServer {
 		metrics:        metrics,
 		bus:            bus,
 		scorer:         scorer,
+		waiters:        make(map[string][]chan error),
 	}
 }
 
@@ -121,24 +96,49 @@ func (fs *FileServer) getPeer(id string) (Peer, error) {
 	return peer, nil
 }
 
+// registerTransferWaiter registers a channel to be notified when a file transfer completes
+func (fs *FileServer) registerTransferWaiter(key string) chan error {
+	fs.waitersLock.Lock()
+	defer fs.waitersLock.Unlock()
+
+	ch := make(chan error, 1)
+	fs.waiters[key] = append(fs.waiters[key], ch)
+	return ch
+}
+
+// notifyTransferComplete notifies all waiters for a given key that the transfer is complete
+func (fs *FileServer) notifyTransferComplete(key string, err error) {
+	fs.waitersLock.Lock()
+	defer fs.waitersLock.Unlock()
+
+	waiters, ok := fs.waiters[key]
+	if !ok {
+		return
+	}
+
+	for _, ch := range waiters {
+		select {
+		case ch <- err:
+		default:
+		}
+		close(ch)
+	}
+	delete(fs.waiters, key)
+}
+
 func (fs *FileServer) OnPeer(conn libp2p_network.Conn) {
 	fs.peerLock.Lock()
 	defer fs.peerLock.Unlock()
 
-	peerID := conn.LocalPeer().String()
+	peerID := conn.RemotePeer().String()
 	fs.peers[peerID] = Peer{
-		ID:   conn.LocalPeer(),
+		ID:   conn.RemotePeer(),
 		Conn: conn,
 	}
-	fs.logger.Info("peer connected", observability.Fields{
-		"peer":      peerID,
-		"direction": conn.Stat().Direction,
-	})
 }
 
 func (fs *FileServer) Start() error {
-	cfg := node.DefaultConfig()
-	node, err := node.NewNode(cfg)
+	node, err := node.NewNode(fs.Config.NodeConfig)
 	if err != nil {
 		return err
 	}
@@ -152,39 +152,34 @@ func (fs *FileServer) Start() error {
 	}
 
 	// Initial handler which will control app working
-	var handler core.Handler = &StorageHandler{
-		Logger: fs.logger,
-		fs:     fs,
-	}
+	var handler core.Handler = fs
 
 	// Apply Rate Limiting
 	rl := middleware.NewRateLimiter(
-		10,            // max 10 requests
-		time.Second,   // per second
-		5*time.Minute, // cleanup inactive peers
+		fs.Config.RateLimiterConfig.Limit,
+		fs.Config.RateLimiterConfig.Window,
+		fs.Config.RateLimiterConfig.TTL,
 	)
 	handler = rl.Wrap(handler)
 
-	protocolConfig := protocol.DefaultConfig()
-	limiter := middleware.NewLimiter(100) // Max concurrent request 100
+	limiter := middleware.NewLimiter(fs.Config.NodeConfig.Concurrency)
 
-	fs.proto = protocol.New(node, "/storage/1.0.0", handler, protocolConfig, fs.logger, limiter)
+	fs.proto = protocol.New(node, "/storage/1.0.0", handler, fs.Config.ProtocolConfig, fs.logger, limiter)
 
 	// Initialize the file transfer handler for streaming file data
 	fs.transferHandler = NewFileTransferHandler(node, fs, fs.logger)
 
-	// Attach any bus event subscribers here first
+	// Listen for peer connections and register them
 	go func() {
 		for evt := range fs.bus.Subscribe(event.PeerConnected) {
 			pe := evt.Data.(network.PeerEvent)
 			fs.OnPeer(pe.Conn)
 		}
 	}()
-	//
 
 	// Attach network manager to control connections
 	// Must be after subscriptions to ensure events are received
-	network.NewManager(cfg, fs.logger, node, fs.bus)
+	network.NewManager(fs.Config.NodeConfig.MaxConnection, fs.logger, node, fs.bus)
 
 	// Start discovery
 	if err := discovery.StartMDNS(node, fs.bus, "storage"); err != nil {
@@ -200,109 +195,86 @@ func (fs *FileServer) Stop() {
 	fs.node.Close()
 }
 
-func (fs *FileServer) HandleMessage(peerID peer.ID, msg core.Message) (core.Message, error) {
-	switch payload := msg.(Message).Payload.(type) {
-	case *MessageStoreFile:
-		return fs.handleStoreFileMessage(peerID, payload)
-	case *MessageGetFile:
-		return fs.handleGetFileMessage(peerID, payload)
+func (fs *FileServer) handleMessage(peerID peer.ID, msg core.Message) (core.Message, error) {
+	protoMsg, ok := msg.(protocol.Message)
+	if !ok {
+		return protocol.Message{Type: protocol.TypeError, Data: protocol.DataInvalidMsg}, nil
 	}
-	return nil, nil
+
+	switch protoMsg.Type {
+	case protocol.TypeStoreFile:
+		return fs.handleStoreFileMessage(peerID, protoMsg.Key)
+	case protocol.TypeGetFile:
+		return fs.handleGetFileMessage(peerID, protoMsg.Key)
+	default:
+		return protocol.Message{Type: protocol.TypeError, Data: protocol.DataUnknownType}, nil
+	}
 }
 
-func (fs *FileServer) handleStoreFileMessage(peerID peer.ID, msgPayload *MessageStoreFile) (core.Message, error) {
+func (fs *FileServer) handleStoreFileMessage(peerID peer.ID, key string) (core.Message, error) {
 	fs.logger.Info("store message received", observability.Fields{
-		"key":  msgPayload.Key,
-		"size": msgPayload.Size,
+		"key": key,
 	})
 
 	// Validate the request
-	if msgPayload.Key == "" {
-		return Message{Payload: &MessageStoreFileAck{
-			Success: false,
-			Error:   "key cannot be empty",
-		}}, nil
-	}
-
-	if msgPayload.Size <= 0 {
-		return Message{Payload: &MessageStoreFileAck{
-			Success: false,
-			Error:   "invalid file size",
-		}}, nil
+	if key == "" {
+		return protocol.Message{Type: protocol.TypeStoreFileAck, Data: protocol.DataEmptyKey}, nil
 	}
 
 	// Check if we have the peer registered
 	_, err := fs.getPeer(peerID.String())
 	if err != nil {
-		return Message{Payload: &MessageStoreFileAck{
-			Success: false,
-			Error:   "peer not registered",
-		}}, nil
+		return protocol.Message{Type: protocol.TypeStoreFileAck, Data: protocol.DataPeerNotFound}, nil
 	}
 
 	fs.logger.Info("ready to receive file transfer", observability.Fields{
 		"peer": peerID.String(),
-		"key":  msgPayload.Key,
-		"size": msgPayload.Size,
+		"key":  key,
 	})
 
 	// Respond with success - the peer should now open a transfer stream
 	// The actual file data will come through the /storage-transfer/1.0.0 protocol
-	return Message{Payload: &MessageStoreFileAck{
-		Success: true,
-	}}, nil
+	return protocol.Message{Type: protocol.TypeStoreFileAck, Key: key, Data: protocol.DataSuccess}, nil
 }
 
-func (fs *FileServer) handleGetFileMessage(peerID peer.ID, msgPayload *MessageGetFile) (core.Message, error) {
+func (fs *FileServer) handleGetFileMessage(peerID peer.ID, key string) (core.Message, error) {
 	fs.logger.Info("get message received", observability.Fields{
-		"key": msgPayload.Key,
+		"key": key,
 	})
 
 	// Validate the request
-	if msgPayload.Key == "" {
-		return Message{Payload: &MessageGetFileResponse{
-			Found: false,
-			Error: "key cannot be empty",
-		}}, nil
+	if key == "" {
+		return protocol.Message{Type: protocol.TypeGetFileResp, Data: protocol.DataEmptyKey}, nil
 	}
 
 	// Check if file exists
-	if !fs.store.Has(msgPayload.Key) {
+	if !fs.store.Has(key) {
 		fs.logger.Info("file requested via peer not found", observability.Fields{
 			"peer": peerID.String(),
-			"key":  msgPayload.Key,
+			"key":  key,
 		})
-		return Message{Payload: &MessageGetFileResponse{
-			Found: false,
-			Error: "file not found",
-		}}, nil
+		return protocol.Message{Type: protocol.TypeGetFileResp, Key: key, Data: protocol.DataNotFound}, nil
 	}
 
 	// Read file from store
-	r, size, err := fs.store.Read(msgPayload.Key)
+	r, size, err := fs.store.Read(key)
 	if err != nil {
 		fs.logger.Error("failed to read file from store", observability.Fields{
 			"error": err.Error(),
-			"key":   msgPayload.Key,
+			"key":   key,
 		})
-		return Message{Payload: &MessageGetFileResponse{
-			Found: false,
-			Error: "failed to read file",
-		}}, nil
+		return protocol.Message{Type: protocol.TypeGetFileResp, Key: key, Data: protocol.DataReadFailed}, nil
 	}
 
 	// Check if peer is registered
 	_, err = fs.getPeer(peerID.String())
 	if err != nil {
-		return Message{Payload: &MessageGetFileResponse{
-			Found: false,
-			Error: "peer not registered",
-		}}, nil
+		return protocol.Message{Type: protocol.TypeGetFileResp, Key: key, Data: protocol.DataPeerNotFound}, nil
 	}
 
 	fs.logger.Info("sending file to peer", observability.Fields{
 		"peer": peerID.String(),
-		"key":  msgPayload.Key,
+		"key":  key,
 		"size": size,
 	})
 
@@ -312,19 +284,16 @@ func (fs *FileServer) handleGetFileMessage(peerID peer.ID, msgPayload *MessageGe
 		ctx, cancel := context.WithTimeout(context.Background(), TransferTimeout)
 		defer cancel()
 
-		if err := fs.transferHandler.SendFile(ctx, peerID, msgPayload.Key, r, size); err != nil {
+		if err := fs.transferHandler.SendFile(ctx, peerID, key, r, size); err != nil {
 			fs.logger.Error("failed to send file to peer", observability.Fields{
 				"error": err.Error(),
 				"peer":  peerID.String(),
-				"key":   msgPayload.Key,
+				"key":   key,
 			})
 		}
 	}()
 
-	return Message{Payload: &MessageGetFileResponse{
-		Found: true,
-		Size:  size,
-	}}, nil
+	return protocol.Message{Type: protocol.TypeGetFileResp, Key: key, Data: protocol.DataFound}, nil
 }
 
 // ============================================================================
@@ -431,12 +400,16 @@ func (fs *FileServer) GetFileFromPeer(ctx context.Context, peerID peer.ID, key s
 		"key":  key,
 	})
 
+	// Register a waiter before sending the request to avoid race conditions
+	waiter := fs.registerTransferWaiter(key)
+
 	// Send get file request via the messaging protocol
 	resp, err := fs.proto.Send(ctx, peerID, protocol.Message{
-		Type: "GET_FILE",
+		Type: protocol.TypeGetFile,
 		Key:  key,
 	})
 	if err != nil {
+		fs.notifyTransferComplete(key, err) // Clean up waiter
 		return fmt.Errorf("failed to send get request: %w", err)
 	}
 
@@ -444,14 +417,30 @@ func (fs *FileServer) GetFileFromPeer(ctx context.Context, peerID peer.ID, key s
 		"response": resp,
 	})
 
-	// The peer will send the file via the transfer protocol
-	// We need to wait for it to arrive and be stored locally
-	// For now, wait a bit for the transfer to complete, then copy from local store
-	time.Sleep(2 * time.Second)
+	// Check if the peer has the file
+	if resp.Data == protocol.DataNotFound {
+		fs.notifyTransferComplete(key, fmt.Errorf("file not found"))
+		return fmt.Errorf("peer does not have the file: %s", key)
+	}
 
-	// Check if we received the file
+	if resp.Data != protocol.DataFound {
+		fs.notifyTransferComplete(key, fmt.Errorf("unexpected response: %s", resp.Data))
+		return fmt.Errorf("unexpected response from peer: %s", resp.Data)
+	}
+
+	// Wait for the transfer to complete with timeout
+	select {
+	case err := <-waiter:
+		if err != nil {
+			return fmt.Errorf("file transfer failed: %w", err)
+		}
+	case <-ctx.Done():
+		return fmt.Errorf("context cancelled while waiting for file transfer: %w", ctx.Err())
+	}
+
+	// Verify we received the file
 	if !fs.store.Has(key) {
-		return fmt.Errorf("file transfer did not complete")
+		return fmt.Errorf("file transfer completed but file not found in store")
 	}
 
 	// If output path is specified, copy from store to output path

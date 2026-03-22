@@ -9,7 +9,11 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/chiragsoni81245/p2p-storage/internal/config"
 	"github.com/chiragsoni81245/p2p-storage/internal/fileserver"
+	"github.com/chiragsoni81245/p2p-storage/internal/middleware"
+	"github.com/chiragsoni81245/p2p-storage/internal/node"
+	"github.com/chiragsoni81245/p2p-storage/internal/protocol"
 	"github.com/chiragsoni81245/p2p-storage/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -74,8 +78,8 @@ var getFileKeyCmd = &cobra.Command{
 
 This key can be used to retrieve the file from the network
 after it has been stored by any peer.`,
-	Args: cobra.ExactArgs(1),
-	RunE: runGetFileKey,
+	Args:    cobra.ExactArgs(1),
+	RunE:    runGetFileKey,
 	Example: `  p2p-storage get-file-key ./myfile.txt`,
 }
 
@@ -111,6 +115,11 @@ func startFileServer() (*fileserver.FileServer, error) {
 	fs := fileserver.NewFileServer(fileserver.FileServerOpts{
 		StorageRoot:       storageRoot,
 		PathTransformFunc: store.CASPathTransformFunc,
+		Config: config.Config{
+			NodeConfig:        node.DefaultConfig(),
+			ProtocolConfig:    protocol.DefaultConfig(),
+			RateLimiterConfig: middleware.DefaultRateLimiterConfig(),
+		},
 	})
 
 	if err := fs.Start(); err != nil {
@@ -220,6 +229,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 	// Check if file exists locally
 	if fs.HasFile(key) {
 		fmt.Println("File found locally")
+		return nil
 	} else {
 		// Wait for peers
 		peerCount := waitForPeers(fs)
@@ -281,7 +291,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
 		for range ticker.C {
-			fmt.Printf("[%s] Peers: %d\n", 
+			fmt.Printf("[%s] Peers: %d\n",
 				time.Now().Format("15:04:05"),
 				fs.GetConnectedPeers())
 		}

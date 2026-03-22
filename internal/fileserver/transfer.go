@@ -178,6 +178,8 @@ func (fth *FileTransferHandler) handleIncomingStream(s network.Stream) {
 			"key":   key,
 			"peer":  remotePeer.String(),
 		})
+		// Notify waiters of failure
+		fth.fs.notifyTransferComplete(key, err)
 		// Send failure response
 		s.Write([]byte{0})
 		return
@@ -188,6 +190,9 @@ func (fth *FileTransferHandler) handleIncomingStream(s network.Stream) {
 		"size": written,
 		"peer": remotePeer.String(),
 	})
+
+	// Notify waiters of success
+	fth.fs.notifyTransferComplete(key, nil)
 
 	// Send success response
 	s.Write([]byte{1})

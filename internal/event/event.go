@@ -7,9 +7,10 @@ import (
 type EventType string
 
 const (
-	PeerDiscovered EventType = "peer:discovered"
-	PeerConnected  EventType = "peer:connected"
-	PeerDisconnected EventType = "peer:disconnected"
+	PeerDiscovered      EventType = "peer:discovered"
+	PeerConnected       EventType = "peer:connected"
+	PeerDisconnected    EventType = "peer:disconnected"
+	FileTransferComplete EventType = "file:transfer:complete"
 )
 
 type Event struct {
