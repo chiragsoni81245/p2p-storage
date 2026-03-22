@@ -30,19 +30,11 @@ func main() {
 		log.Fatal(err)
 	}
 
-	logger.Info("Node started", observability.Fields{"node_id": n.ID})
+	logger.Info("Node started", observability.Fields{"node_id": n.ID().String()})
 	for _, addr := range n.Addrs() {
 		logger.Info("peer address", observability.Fields{
-			"address": fmt.Sprintf("%s/p2p/%s\n", addr, n.ID()),
+			"address": fmt.Sprintf("%s/p2p/%s", addr, n.ID()),
 		})
-	}
-
-	// Attach network manager to control connections
-	network.NewManager(cfg, logger, n, bus)
-	
-	// Start discovery
-	if err := discovery.StartMDNS(n, bus, "p2p-storage"); err != nil {
-		log.Fatal(err)
 	}
 
 	// Initial handler which will control app working
@@ -52,21 +44,19 @@ func main() {
 
 	// Apply Rate Limiting
 	rl := middleware.NewRateLimiter(
-		10,             // max 10 requests
-		time.Second,    // per second
-		5*time.Minute,  // cleanup inactive peers
+		10,            // max 10 requests
+		time.Second,   // per second
+		5*time.Minute, // cleanup inactive peers
 	)
 	handler = rl.Wrap(handler)
 
 	protocolConfig := protocol.DefaultConfig()
 	limiter := middleware.NewLimiter(100) // Max concurrent request 100
-	scorer := network.NewPeerScorer() // Manage peer score and use best peers
+	scorer := network.NewPeerScorer()     // Manage peer score and use best peers
 
 	proto := protocol.New(n, "/app/1.0.0", handler, protocolConfig, logger, limiter)
 
-
-	// Some example usage
-
+	// Set up event subscriptions BEFORE starting discovery to avoid missing events
 	go func() {
 		for evt := range bus.Subscribe(event.PeerDiscovered) {
 			pe := evt.Data.(discovery.PeerDiscoveredEvent)
@@ -81,12 +71,12 @@ func main() {
 	}()
 
 	go func() {
-		for evt := range bus.Subscribe(event.PeerConnected) {
+		for evt := range bus.Subscribe(event.PeerDisconnected) {
 			pe := evt.Data.(network.PeerEvent)
 			peerID := pe.PeerID
 
 			logger.Info("peer disconnected", observability.Fields{
-				"peer": peerID,
+				"peer":      peerID,
 				"direction": pe.Conn.Stat().Direction,
 			})
 
@@ -103,7 +93,6 @@ func main() {
 				"peer":      peerID,
 				"direction": pe.Conn.Stat().Direction,
 			})
-
 
 			// This is the point peer touch once its connected successfully
 			for range 5 {
@@ -126,12 +115,22 @@ func main() {
 				}
 				logger.Info("peer response", observability.Fields{"response": resp})
 
-				time.Sleep(1*time.Second)
+				time.Sleep(1 * time.Second)
 			}
-
 
 		}
 	}()
+
+	// Attach network manager to control connections
+	// Must be after subscriptions to ensure events are received
+	network.NewManager(cfg, logger, n, bus)
+
+	// Start discovery
+	if err := discovery.StartMDNS(n, bus, "p2p-storage"); err != nil {
+		log.Fatal(err)
+	}
+
+	logger.Info("Discovery started", observability.Fields{})
 
 	select {}
 }
