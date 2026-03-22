@@ -1,3 +1,4 @@
 bin
 node.key
 coverage.out
+p2p-storage
