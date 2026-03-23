@@ -7,16 +7,11 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
-	"strings"
 	"syscall"
 	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/config"
-	"github.com/chiragsoni81245/p2p-storage/internal/discovery"
 	"github.com/chiragsoni81245/p2p-storage/internal/fileserver"
-	"github.com/chiragsoni81245/p2p-storage/internal/middleware"
-	"github.com/chiragsoni81245/p2p-storage/internal/node"
-	"github.com/chiragsoni81245/p2p-storage/internal/protocol"
 	"github.com/chiragsoni81245/p2p-storage/internal/store"
 	"github.com/spf13/cobra"
 )
@@ -30,6 +25,9 @@ var (
 	logFile        string
 	discoveryModes string
 	bootstrapPeers []string
+
+	// Loaded YAML config (merged with defaults)
+	yamlConfig *config.YAMLConfig
 )
 
 func main() {
@@ -108,13 +106,28 @@ and serve stored files on request.`,
 
 func init() {
 	// Global persistent flags
-	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", "", "path to config file")
-	rootCmd.PersistentFlags().StringVarP(&storageRoot, "storage", "s", "./storage", "storage directory")
-	rootCmd.PersistentFlags().DurationVarP(&peerWait, "wait", "w", 5*time.Second, "time to wait for peer discovery")
-	rootCmd.PersistentFlags().DurationVarP(&timeout, "timeout", "t", 5*time.Minute, "operation timeout")
-	rootCmd.PersistentFlags().StringVarP(&logFile, "log-file", "l", "", "path to log file (default: stdout)")
-	rootCmd.PersistentFlags().StringVarP(&discoveryModes, "discovery", "d", "mdns", "discovery methods (comma-separated: mdns,dht,bootstrap)")
-	rootCmd.PersistentFlags().StringSliceVarP(&bootstrapPeers, "bootstrap", "b", []string{}, "bootstrap peer addresses (multiaddr format)")
+	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", config.DefaultConfigPath, "path to config file")
+	rootCmd.PersistentFlags().StringVarP(&storageRoot, "storage", "s", "", "storage directory (overrides config file)")
+	rootCmd.PersistentFlags().DurationVarP(&peerWait, "wait", "w", 0, "time to wait for peer discovery (overrides config file)")
+	rootCmd.PersistentFlags().DurationVarP(&timeout, "timeout", "t", 0, "operation timeout (overrides config file)")
+	rootCmd.PersistentFlags().StringVarP(&logFile, "log-file", "l", "", "path to log file (overrides config file)")
+	rootCmd.PersistentFlags().StringVarP(&discoveryModes, "discovery", "d", "", "discovery methods (comma-separated: mdns,dht,bootstrap) (overrides config file)")
+	rootCmd.PersistentFlags().StringSliceVarP(&bootstrapPeers, "bootstrap", "b", []string{}, "bootstrap peer addresses (multiaddr format) (overrides config file)")
+
+	// Load config before any command runs
+	rootCmd.PersistentPreRunE = func(cmd *cobra.Command, args []string) error {
+		var err error
+		yamlConfig, err = config.Load(config.CLIOverrides{
+			ConfigPath:     configPath,
+			StorageRoot:    storageRoot,
+			PeerWait:       peerWait,
+			Timeout:        timeout,
+			LogFile:        logFile,
+			DiscoveryModes: discoveryModes,
+			BootstrapPeers: bootstrapPeers,
+		})
+		return err
+	}
 
 	// Add commands
 	rootCmd.AddCommand(storeCmd)
@@ -123,58 +136,18 @@ func init() {
 	rootCmd.AddCommand(daemonCmd)
 }
 
-// getLogWriter returns the appropriate log writer based on the logFile flag
+// getLogWriter returns the appropriate log writer based on config
 func getLogWriter() (io.Writer, func(), error) {
-	if logFile == "" {
+	if yamlConfig.LogFile == "" {
 		return os.Stdout, func() {}, nil
 	}
 
-	f, err := os.OpenFile(logFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+	f, err := os.OpenFile(yamlConfig.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log file: %w", err)
 	}
 
 	return f, func() { f.Close() }, nil
-}
-
-// buildDiscoveryConfig creates the discovery configuration from CLI flags
-func buildDiscoveryConfig() discovery.Config {
-	cfg := discovery.DefaultConfig()
-
-	// Parse discovery methods
-	methods := []discovery.DiscoveryMethod{}
-	for _, m := range strings.Split(discoveryModes, ",") {
-		m = strings.TrimSpace(strings.ToLower(m))
-		switch m {
-		case "mdns":
-			methods = append(methods, discovery.MethodMDNS)
-		case "dht":
-			methods = append(methods, discovery.MethodDHT)
-		case "bootstrap":
-			methods = append(methods, discovery.MethodBootstrap)
-		}
-	}
-	if len(methods) > 0 {
-		cfg.EnabledMethods = methods
-	}
-
-	// Set bootstrap peers if provided
-	if len(bootstrapPeers) > 0 {
-		cfg.Bootstrap.BootstrapPeers = bootstrapPeers
-		// Automatically enable bootstrap method if peers provided
-		hasBootstrap := false
-		for _, m := range cfg.EnabledMethods {
-			if m == discovery.MethodBootstrap {
-				hasBootstrap = true
-				break
-			}
-		}
-		if !hasBootstrap {
-			cfg.EnabledMethods = append(cfg.EnabledMethods, discovery.MethodBootstrap)
-		}
-	}
-
-	return cfg
 }
 
 // startFileServer creates and starts the file server
@@ -184,22 +157,11 @@ func startFileServer() (*fileserver.FileServer, func(), error) {
 		return nil, nil, err
 	}
 
-	nodeCfg := node.DefaultConfig()
-	nodeCfg.DiscoveryConfig = buildDiscoveryConfig()
-
 	fs, err := fileserver.NewFileServer(fileserver.FileServerOpts{
-		StorageRoot:       storageRoot,
+		StorageRoot:       yamlConfig.StorageRoot,
 		PathTransformFunc: store.CASPathTransformFunc,
 		LogWriter:         logWriter,
-		Config: config.Config{
-			NodeConfig:        nodeCfg,
-			ProtocolConfig:    protocol.DefaultConfig(),
-			RateLimiterConfig: middleware.DefaultRateLimiterConfig(),
-			Encryption: store.EncryptionConfig{
-				Enabled: true,
-				KeyPath: "./encryption.key",
-			},
-		},
+		Config:            yamlConfig.ToConfig(),
 	})
 	if err != nil {
 		closeLog()
@@ -221,9 +183,9 @@ func startFileServer() (*fileserver.FileServer, func(), error) {
 
 // waitForPeers waits for peer discovery
 func waitForPeers(fs *fileserver.FileServer) int {
-	fmt.Printf("Discovering peers (%s)...\n", peerWait)
+	fmt.Printf("Discovering peers (%s)...\n", yamlConfig.PeerWait)
 
-	deadline := time.Now().Add(peerWait)
+	deadline := time.Now().Add(yamlConfig.PeerWait)
 	ticker := time.NewTicker(500 * time.Millisecond)
 	defer ticker.Stop()
 
@@ -279,7 +241,7 @@ func runStore(cmd *cobra.Command, args []string) error {
 
 	fmt.Println("\nStoring file...")
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
 	defer cancel()
 
 	count, err := fs.StoreFile(ctx, key, filePath, peerCount)
@@ -324,7 +286,7 @@ func runGet(cmd *cobra.Command, args []string) error {
 		fmt.Printf("\nRequesting from %d peer(s)...\n", peerCount)
 	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
 	defer cancel()
 
 	if err := fs.GetFile(ctx, key, outputPath); err != nil {
@@ -369,7 +331,7 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	defer closeLog()
 	defer fs.Stop()
 
-	fmt.Printf("Storage: %s\n", storageRoot)
+	fmt.Printf("Storage: %s\n", yamlConfig.StorageRoot)
 	fmt.Println("\nDaemon running. Press Ctrl+C to stop.")
 
 	// Print status periodically
