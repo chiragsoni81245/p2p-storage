@@ -29,41 +29,63 @@ func NewManager(maxConnection int, logger *observability.Logger, h host.Host, bu
 
 	h.Network().Notify(NewNotifier(bus))
 
-	go m.listen()
+	// Subscribe BEFORE returning to avoid race condition with discovery
+	// The subscription must be ready before discovery starts publishing events
+	ch := bus.Subscribe(event.PeerDiscovered)
+	logger.Info("network manager subscribed to peer discovery events", observability.Fields{})
+
+	go m.listen(ch)
 
 	return m
 }
 
-func (m *Manager) listen() {
-	ch := m.bus.Subscribe(event.PeerDiscovered)
+func (m *Manager) listen(ch <-chan event.Event) {
+	m.logger.Info("network manager starting to listen for discovered peers", observability.Fields{})
 
 	for evt := range ch {
 		event := evt.Data.(discovery.PeerDiscoveredEvent)
+		m.logger.Info("received peer discovered event", observability.Fields{
+			"peer_id": event.AddrInfo.ID.String(),
+			"addrs":   event.AddrInfo.Addrs,
+		})
 
 		go m.connect(event.AddrInfo)
 	}
 }
 
 func (m *Manager) connect(pi peer.AddrInfo) {
+	m.logger.Info("attempting to connect to discovered peer", observability.Fields{
+		"peer_id": pi.ID.String(),
+		"addrs":   pi.Addrs,
+	})
+
 	if m.host.Network().Connectedness(pi.ID) == network.Connected {
-		// Ignore if already connected
+		m.logger.Info("peer already connected, skipping", observability.Fields{
+			"peer_id": pi.ID.String(),
+		})
 		return
 	}
 
 	if len(m.host.Network().Peers()) >= m.maxConnection {
-		/*
-			Stop connecting peers if we already have max connections
-			This is required for admission control as prune will happen after connection cost is paid
-			so for sudden big spike this is better prevention
-		*/
+		m.logger.Info("max connections reached, skipping peer", observability.Fields{
+			"peer_id":        pi.ID.String(),
+			"current_peers":  len(m.host.Network().Peers()),
+			"max_connection": m.maxConnection,
+		})
 		return
 	}
 
 	err := m.host.Connect(context.Background(), pi)
 	if err != nil {
 		m.logger.Error("connection failed", observability.Fields{
-			"error": err.Error(),
+			"peer_id": pi.ID.String(),
+			"addrs":   pi.Addrs,
+			"error":   err.Error(),
 		})
 		return
 	}
+
+	m.logger.Info("successfully connected to peer", observability.Fields{
+		"peer_id": pi.ID.String(),
+	})
 }

@@ -4,15 +4,22 @@ package discovery
 
 import (
 	"fmt"
+	"io"
 	"testing"
 	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// testLogger returns a silent logger for tests
+func testLogger() *observability.Logger {
+	return observability.NewLoggerWithWriter(io.Discard, observability.Fields{})
+}
 
 func TestDefaultConfig(t *testing.T) {
 	cfg := DefaultConfig()
@@ -37,7 +44,7 @@ func TestNewManager(t *testing.T) {
 	bus := event.NewBus()
 	cfg := DefaultConfig()
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	assert.NotNil(t, mgr)
 	assert.Equal(t, h, mgr.host)
@@ -55,7 +62,7 @@ func TestNewManager_DefaultsMDNS(t *testing.T) {
 		MDNS:           DefaultMDNSConfig(),
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	// Should default to mDNS
 	assert.Equal(t, []DiscoveryMethod{MethodMDNS}, mgr.config.EnabledMethods)
@@ -72,7 +79,7 @@ func TestManager_Start_MDNSOnly(t *testing.T) {
 		MDNS:           DefaultMDNSConfig(),
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	err = mgr.Start()
 	assert.NoError(t, err)
@@ -100,7 +107,7 @@ func TestManager_Start_DHTOnly(t *testing.T) {
 		},
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	err = mgr.Start()
 	assert.NoError(t, err)
@@ -123,7 +130,7 @@ func TestManager_Start_BootstrapOnly(t *testing.T) {
 		Bootstrap:      DefaultBootstrapConfig(),
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	err = mgr.Start()
 	assert.NoError(t, err)
@@ -153,7 +160,7 @@ func TestManager_Start_AllMethods(t *testing.T) {
 		Bootstrap: DefaultBootstrapConfig(),
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	err = mgr.Start()
 	assert.NoError(t, err)
@@ -177,7 +184,7 @@ func TestManager_IsMethodEnabled(t *testing.T) {
 		DHT:            DefaultDHTConfig(),
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	assert.True(t, mgr.IsMethodEnabled(MethodMDNS))
 	assert.True(t, mgr.IsMethodEnabled(MethodDHT))
@@ -208,7 +215,7 @@ func TestManager_AddBootstrapPeer(t *testing.T) {
 		},
 	}
 
-	mgr := NewManager(h2, bus, cfg)
+	mgr := NewManager(h2, bus, cfg, testLogger())
 
 	err = mgr.Start()
 	require.NoError(t, err)
@@ -243,7 +250,7 @@ func TestManager_AddBootstrapPeer_NoBootstrapService(t *testing.T) {
 		MDNS:           DefaultMDNSConfig(),
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	err = mgr.Start()
 	require.NoError(t, err)
@@ -272,7 +279,7 @@ func TestManager_Stop(t *testing.T) {
 		Bootstrap: DefaultBootstrapConfig(),
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	err = mgr.Start()
 	require.NoError(t, err)
@@ -290,7 +297,7 @@ func TestManager_Stop_BeforeStart(t *testing.T) {
 	bus := event.NewBus()
 	cfg := DefaultConfig()
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	// Stop before Start should not error
 	err = mgr.Stop()
@@ -308,7 +315,7 @@ func TestManager_StartMDNSTwice(t *testing.T) {
 		MDNS:           DefaultMDNSConfig(),
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	err = mgr.Start()
 	require.NoError(t, err)
@@ -331,7 +338,7 @@ func TestManager_GetDHT_Nil(t *testing.T) {
 		MDNS:           DefaultMDNSConfig(),
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	// DHT not enabled
 	assert.Nil(t, mgr.GetDHT())
@@ -348,7 +355,7 @@ func TestManager_GetBootstrap_Nil(t *testing.T) {
 		MDNS:           DefaultMDNSConfig(),
 	}
 
-	mgr := NewManager(h, bus, cfg)
+	mgr := NewManager(h, bus, cfg, testLogger())
 
 	// Bootstrap not enabled
 	assert.Nil(t, mgr.GetBootstrap())

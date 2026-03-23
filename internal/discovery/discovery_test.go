@@ -3,15 +3,22 @@
 package discovery
 
 import (
+	"io"
 	"testing"
 	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
 )
+
+// discTestLogger returns a silent logger for tests
+func discTestLogger() *observability.Logger {
+	return observability.NewLoggerWithWriter(io.Discard, observability.Fields{})
+}
 
 func TestNotifee_HandlePeerFound(t *testing.T) {
 	h, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
@@ -20,8 +27,9 @@ func TestNotifee_HandlePeerFound(t *testing.T) {
 
 	bus := event.NewBus()
 	notifee := &Notifee{
-		Host: h,
-		Bus:  bus,
+		Host:   h,
+		Bus:    bus,
+		logger: discTestLogger(),
 	}
 
 	// Subscribe to peer discovered events
@@ -58,8 +66,9 @@ func TestNotifee_HandlePeerFound_IgnoresSelf(t *testing.T) {
 
 	bus := event.NewBus()
 	notifee := &Notifee{
-		Host: h,
-		Bus:  bus,
+		Host:   h,
+		Bus:    bus,
+		logger: discTestLogger(),
 	}
 
 	// Subscribe to peer discovered events
@@ -107,7 +116,7 @@ func TestStartMDNS(t *testing.T) {
 	bus := event.NewBus()
 
 	// Starting mDNS should not error
-	err = StartMDNS(h, bus, "test-service")
+	err = StartMDNS(h, bus, "test-service", discTestLogger())
 	assert.NoError(t, err)
 }
 
@@ -128,10 +137,10 @@ func TestStartMDNS_MultipleHosts(t *testing.T) {
 	ch2 := bus2.Subscribe(event.PeerDiscovered)
 
 	// Start mDNS on both hosts with same service name
-	err = StartMDNS(h1, bus1, "test-mdns-service")
+	err = StartMDNS(h1, bus1, "test-mdns-service", discTestLogger())
 	require.NoError(t, err)
 
-	err = StartMDNS(h2, bus2, "test-mdns-service")
+	err = StartMDNS(h2, bus2, "test-mdns-service", discTestLogger())
 	require.NoError(t, err)
 
 	// At least one should discover the other (mDNS discovery)

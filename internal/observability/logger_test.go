@@ -62,7 +62,7 @@ func TestLogger_Error(t *testing.T) {
 
 func TestLogger_Debug(t *testing.T) {
 	buf := &bytes.Buffer{}
-	logger := NewLoggerWithWriter(buf, Fields{})
+	logger := NewLoggerWithLevel(buf, Fields{}, LevelDebug)
 
 	logger.Debug("debug info", Fields{"debug_data": 123})
 
