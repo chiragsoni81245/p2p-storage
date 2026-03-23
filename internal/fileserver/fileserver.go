@@ -6,6 +6,7 @@ import (
 	"io"
 	"os"
 	"sync"
+	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/config"
 	"github.com/chiragsoni81245/p2p-storage/internal/core"
@@ -155,37 +156,45 @@ func (fs *FileServer) OnPeerConnect(conn libp2p_network.Conn) {
 
 	peerID := conn.RemotePeer().String()
 
-	// Only add if not already tracked (avoid duplicate events)
-	if _, exists := fs.peers[peerID]; !exists {
-		fs.peers[peerID] = Peer{
-			ID:   conn.RemotePeer(),
-			Conn: conn,
-		}
-		fs.logger.Info("peer registered", observability.Fields{
-			"peer_id":    peerID,
-			"peer_count": len(fs.peers),
-		})
+	// Always update the connection (in case of reconnection or upgrade)
+	fs.peers[peerID] = Peer{
+		ID:   conn.RemotePeer(),
+		Conn: conn,
 	}
-}
-
-func (fs *FileServer) OnPeerDisconnect(conn libp2p_network.Conn) {
-	fs.peerLock.Lock()
-	defer fs.peerLock.Unlock()
-
-	peerID := conn.RemotePeer().String()
-
-	// Only remove if the peer is truly disconnected (no remaining connections)
-	// Check using the host's network state
-	if fs.node != nil && fs.node.Network().Connectedness(conn.RemotePeer()) == libp2p_network.Connected {
-		// Still connected via another connection, don't remove
-		return
-	}
-
-	delete(fs.peers, peerID)
-	fs.logger.Info("peer unregistered", observability.Fields{
+	fs.logger.Info("peer registered", observability.Fields{
 		"peer_id":    peerID,
 		"peer_count": len(fs.peers),
 	})
+}
+
+func (fs *FileServer) OnPeerDisconnect(conn libp2p_network.Conn) {
+	peerID := conn.RemotePeer()
+
+	// Debounce disconnect - wait a bit then check if still disconnected
+	// This handles connection upgrades and duplicate connection pruning
+	go func() {
+		time.Sleep(500 * time.Millisecond)
+
+		// Re-check if peer is still disconnected after the delay
+		if fs.node != nil && fs.node.Network().Connectedness(peerID) == libp2p_network.Connected {
+			// Peer reconnected or was never truly disconnected
+			return
+		}
+
+		fs.peerLock.Lock()
+		defer fs.peerLock.Unlock()
+
+		// Double-check peer still exists (might have been removed already)
+		if _, exists := fs.peers[peerID.String()]; !exists {
+			return
+		}
+
+		delete(fs.peers, peerID.String())
+		fs.logger.Info("peer unregistered", observability.Fields{
+			"peer_id":    peerID.String(),
+			"peer_count": len(fs.peers),
+		})
+	}()
 }
 
 func (fs *FileServer) Start() error {
