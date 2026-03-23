@@ -154,7 +154,7 @@ func (fs *FileServer) OnPeerConnect(conn libp2p_network.Conn) {
 	defer fs.peerLock.Unlock()
 
 	peerID := conn.RemotePeer().String()
-	
+
 	// Only add if not already tracked (avoid duplicate events)
 	if _, exists := fs.peers[peerID]; !exists {
 		fs.peers[peerID] = Peer{
@@ -173,14 +173,14 @@ func (fs *FileServer) OnPeerDisconnect(conn libp2p_network.Conn) {
 	defer fs.peerLock.Unlock()
 
 	peerID := conn.RemotePeer().String()
-	
+
 	// Only remove if the peer is truly disconnected (no remaining connections)
 	// Check using the host's network state
 	if fs.node != nil && fs.node.Network().Connectedness(conn.RemotePeer()) == libp2p_network.Connected {
 		// Still connected via another connection, don't remove
 		return
 	}
-	
+
 	delete(fs.peers, peerID)
 	fs.logger.Info("peer unregistered", observability.Fields{
 		"peer_id":    peerID,
