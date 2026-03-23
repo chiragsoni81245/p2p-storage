@@ -41,13 +41,6 @@ node:
   # Enable AutoNAT - detects if node is behind NAT
   enable_auto_nat: true
   
-  # Your EC2 relay server address
-  # Format: /ip4/<EC2_PUBLIC_IP>/tcp/<PORT>/p2p/<RELAY_PEER_ID>
-  relay_servers:
-    - "/ip4/3.84.201.57/tcp/4001/p2p/12D3KooWLhiAVaVs1kXLxfPfSRyy4iEXsFeC9znCs8TkDfcJZmqc"
-    - "/ip4/3.84.201.57/udp/4001/quic-v1/p2p/12D3KooWLhiAVaVs1kXLxfPfSRyy4iEXsFeC9znCs8TkDfcJZmqc"
-    - "/ip4/3.84.201.57/udp/4001/quic-v1/webtransport/certhash/uEiA1j3s9Y49oQgswjrudxa6QKC55uhO-B8exWyGyBLYLMQ/certhash/uEiBAAJpcikHa6m2LZfTWE6_3-hVMKnLI7_Ql4YcnveIldw/p2p/12D3KooWLhiAVaVs1kXLxfPfSRyy4iEXsFeC9znCs8TkDfcJZmqc"
-  
   # Set to true ONLY on your EC2 relay server
   enable_relay_service: false
 
@@ -78,7 +71,8 @@ node:
     # Bootstrap peer configuration
     bootstrap:
       # List of bootstrap peer multiaddrs
-      peers: []
+      peers: 
+        - "/ip4/3.84.201.57/tcp/4001/p2p/12D3KooWLhiAVaVs1kXLxfPfSRyy4iEXsFeC9znCs8TkDfcJZmqc"
       connection_timeout: 30s
       retry_interval: 10s
       max_retries: 3
