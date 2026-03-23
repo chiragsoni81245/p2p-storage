@@ -4,6 +4,7 @@ import (
 	"sync"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 	"github.com/libp2p/go-libp2p/core/host"
 )
 
@@ -47,6 +48,7 @@ type Manager struct {
 	host   host.Host
 	bus    *event.Bus
 	config Config
+	logger *observability.Logger
 
 	mu           sync.RWMutex
 	bootstrap    *Bootstrap
@@ -55,7 +57,7 @@ type Manager struct {
 }
 
 // NewManager creates a new discovery manager
-func NewManager(h host.Host, bus *event.Bus, cfg Config) *Manager {
+func NewManager(h host.Host, bus *event.Bus, cfg Config, logger *observability.Logger) *Manager {
 	// Default to mDNS only if no methods specified
 	if len(cfg.EnabledMethods) == 0 {
 		cfg.EnabledMethods = []DiscoveryMethod{MethodMDNS}
@@ -65,6 +67,7 @@ func NewManager(h host.Host, bus *event.Bus, cfg Config) *Manager {
 		host:   h,
 		bus:    bus,
 		config: cfg,
+		logger: logger,
 	}
 }
 
@@ -118,7 +121,7 @@ func (m *Manager) startMDNS() error {
 		return nil
 	}
 
-	if err := StartMDNSWithConfig(m.host, m.bus, m.config.MDNS); err != nil {
+	if err := StartMDNSWithConfig(m.host, m.bus, m.config.MDNS, m.logger); err != nil {
 		return err
 	}
 

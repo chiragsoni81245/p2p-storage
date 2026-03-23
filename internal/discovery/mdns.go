@@ -4,6 +4,7 @@ import (
 	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
 	mdns "github.com/libp2p/go-libp2p/p2p/discovery/mdns"
@@ -24,8 +25,9 @@ func DefaultMDNSConfig() MDNSConfig {
 }
 
 type Notifee struct {
-	Host host.Host
-	Bus  *event.Bus
+	Host   host.Host
+	Bus    *event.Bus
+	logger *observability.Logger
 }
 
 func (n *Notifee) HandlePeerFound(pi peer.AddrInfo) {
@@ -33,6 +35,11 @@ func (n *Notifee) HandlePeerFound(pi peer.AddrInfo) {
 	if pi.ID == n.Host.ID() {
 		return
 	}
+
+	n.logger.Debug("mDNS peer discovered", observability.Fields{
+		"peer_id": pi.ID.String(),
+		"addrs":   pi.Addrs,
+	})
 
 	n.Bus.Publish(event.Event{
 		Type: event.PeerDiscovered,
@@ -43,15 +50,20 @@ func (n *Notifee) HandlePeerFound(pi peer.AddrInfo) {
 }
 
 // StartMDNS starts mDNS discovery with default configuration
-func StartMDNS(h host.Host, bus *event.Bus, serviceName string) error {
+func StartMDNS(h host.Host, bus *event.Bus, serviceName string, logger *observability.Logger) error {
 	return StartMDNSWithConfig(h, bus, MDNSConfig{
 		ServiceName: serviceName,
 		Interval:    5 * time.Second,
-	})
+	}, logger)
 }
 
 // StartMDNSWithConfig starts mDNS discovery with custom configuration
-func StartMDNSWithConfig(h host.Host, bus *event.Bus, cfg MDNSConfig) error {
-	svc := mdns.NewMdnsService(h, cfg.ServiceName, &Notifee{Host: h, Bus: bus})
-	return svc.Start()
+func StartMDNSWithConfig(h host.Host, bus *event.Bus, cfg MDNSConfig, logger *observability.Logger) error {
+	svc := mdns.NewMdnsService(h, cfg.ServiceName, &Notifee{Host: h, Bus: bus, logger: logger})
+	err := svc.Start()
+	if err != nil {
+		logger.Error("Failed to start mDNS service", observability.Fields{"error": err.Error()})
+		return err
+	}
+	return nil
 }

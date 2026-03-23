@@ -23,6 +23,7 @@ var (
 	peerWait       time.Duration
 	timeout        time.Duration
 	logFile        string
+	logLevel       string
 	discoveryModes string
 	bootstrapPeers []string
 
@@ -111,6 +112,7 @@ func init() {
 	rootCmd.PersistentFlags().DurationVarP(&peerWait, "wait", "w", 0, "time to wait for peer discovery (overrides config file)")
 	rootCmd.PersistentFlags().DurationVarP(&timeout, "timeout", "t", 0, "operation timeout (overrides config file)")
 	rootCmd.PersistentFlags().StringVarP(&logFile, "log-file", "l", "", "path to log file (overrides config file)")
+	rootCmd.PersistentFlags().StringVar(&logLevel, "log-level", "", "log level: debug, info, error (overrides config file)")
 	rootCmd.PersistentFlags().StringVarP(&discoveryModes, "discovery", "d", "", "discovery methods (comma-separated: mdns,dht,bootstrap) (overrides config file)")
 	rootCmd.PersistentFlags().StringSliceVarP(&bootstrapPeers, "bootstrap", "b", []string{}, "bootstrap peer addresses (multiaddr format) (overrides config file)")
 
@@ -123,6 +125,7 @@ func init() {
 			PeerWait:       peerWait,
 			Timeout:        timeout,
 			LogFile:        logFile,
+			LogLevel:       logLevel,
 			DiscoveryModes: discoveryModes,
 			BootstrapPeers: bootstrapPeers,
 		})
@@ -161,6 +164,7 @@ func startFileServer() (*fileserver.FileServer, func(), error) {
 		StorageRoot:       yamlConfig.StorageRoot,
 		PathTransformFunc: store.CASPathTransformFunc,
 		LogWriter:         logWriter,
+		LogLevel:          yamlConfig.LogLevel,
 		Config:            yamlConfig.ToConfig(),
 	})
 	if err != nil {

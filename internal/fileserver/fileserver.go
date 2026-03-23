@@ -26,6 +26,7 @@ type FileServerOpts struct {
 	StorageRoot       string
 	PathTransformFunc store.PathTransformFunc
 	LogWriter         io.Writer // Log output writer (defaults to os.Stdout if nil)
+	LogLevel          string    // Log level: debug, info, error (defaults to "info" if empty)
 	Config            config.Config
 	Encryption        *store.EncryptionConfig // Encryption config (enabled by default if nil)
 }
@@ -82,7 +83,8 @@ func NewFileServer(opts FileServerOpts) (*FileServer, error) {
 		logWriter = os.Stdout
 	}
 
-	logger := observability.NewLoggerWithWriter(logWriter, observability.Fields{})
+	logLevel := observability.ParseLogLevel(opts.LogLevel)
+	logger := observability.NewLoggerWithLevel(logWriter, observability.Fields{}, logLevel)
 	metrics := observability.NewMetrics()
 	bus := event.NewBus()
 	scorer := network.NewPeerScorer() // Manage peer score and use best peers
@@ -219,7 +221,7 @@ func (fs *FileServer) Start() error {
 	network.NewManager(fs.Config.NodeConfig.MaxConnection, fs.logger, node, fs.bus)
 
 	// Start discovery with configured methods
-	fs.discoveryMgr = discovery.NewManager(node, fs.bus, fs.Config.NodeConfig.DiscoveryConfig)
+	fs.discoveryMgr = discovery.NewManager(node, fs.bus, fs.Config.NodeConfig.DiscoveryConfig, fs.logger)
 	if err := fs.discoveryMgr.Start(); err != nil {
 		return err
 	}

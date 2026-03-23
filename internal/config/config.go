@@ -31,6 +31,7 @@ type CLIOverrides struct {
 	PeerWait       time.Duration
 	Timeout        time.Duration
 	LogFile        string
+	LogLevel       string
 	DiscoveryModes string
 	BootstrapPeers []string
 }
@@ -39,6 +40,7 @@ type CLIOverrides struct {
 type YAMLConfig struct {
 	StorageRoot string        `yaml:"storage_root"`
 	LogFile     string        `yaml:"log_file"`
+	LogLevel    string        `yaml:"log_level"`
 	PeerWait    time.Duration `yaml:"peer_wait"`
 	Timeout     time.Duration `yaml:"timeout"`
 
@@ -172,6 +174,9 @@ func Load(overrides CLIOverrides) (*YAMLConfig, error) {
 	if overrides.LogFile != "" {
 		cfg.LogFile = overrides.LogFile
 	}
+	if overrides.LogLevel != "" {
+		cfg.LogLevel = overrides.LogLevel
+	}
 	if overrides.DiscoveryModes != "" {
 		methods := []string{}
 		for _, m := range strings.Split(overrides.DiscoveryModes, ",") {
@@ -212,6 +217,7 @@ func DefaultYAMLConfig() *YAMLConfig {
 	return &YAMLConfig{
 		StorageRoot: "./storage",
 		LogFile:     "",
+		LogLevel:    "info",
 		PeerWait:    5 * time.Second,
 		Timeout:     5 * time.Minute,
 
