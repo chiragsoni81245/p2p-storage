@@ -9,15 +9,31 @@ type Config struct {
 	MaxConnection   int
 	Concurrency     int // Max concurrent request handling
 	DiscoveryConfig discovery.Config
+
+	// NAT Traversal config
+	EnableRelay        bool     // Enable circuit relay client
+	EnableHolePunch    bool     // Enable hole punching (DCUtR)
+	EnableAutoNAT      bool     // Enable AutoNAT to detect NAT status
+	RelayServers       []string // Static relay server multiaddrs (your EC2 server)
+	EnableRelayService bool     // Run as relay server (for your EC2 instance)
+
+	// Address announcement (for relay servers on EC2/cloud)
+	ExternalIP string // Public IP to announce (e.g., "54.123.45.67")
 }
 
 func DefaultConfig() Config {
 	return Config{
-		ListenPort:      0,
-		IdentityPath:    "./node.key",
-		MinConnection:   50,
-		MaxConnection:   100,
-		Concurrency:     10,
-		DiscoveryConfig: discovery.DefaultConfig(),
+		ListenPort:         0,
+		IdentityPath:       "./node.key",
+		MinConnection:      50,
+		MaxConnection:      100,
+		Concurrency:        10,
+		DiscoveryConfig:    discovery.DefaultConfig(),
+		EnableRelay:        true,
+		EnableHolePunch:    true,
+		EnableAutoNAT:      true,
+		RelayServers:       []string{},
+		EnableRelayService: false,
+		ExternalIP:         "",
 	}
 }

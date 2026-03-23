@@ -56,6 +56,16 @@ type YAMLNodeConfig struct {
 	MaxConnection int    `yaml:"max_connection"`
 	Concurrency   int    `yaml:"concurrency"`
 
+	// NAT Traversal
+	EnableRelay        bool     `yaml:"enable_relay"`
+	EnableHolePunch    bool     `yaml:"enable_hole_punch"`
+	EnableAutoNAT      bool     `yaml:"enable_auto_nat"`
+	RelayServers       []string `yaml:"relay_servers"`
+	EnableRelayService bool     `yaml:"enable_relay_service"`
+
+	// Address announcement (for relay servers on EC2/cloud)
+	ExternalIP string `yaml:"external_ip"`
+
 	Discovery YAMLDiscoveryConfig `yaml:"discovery"`
 }
 
@@ -206,11 +216,17 @@ func DefaultYAMLConfig() *YAMLConfig {
 		Timeout:     5 * time.Minute,
 
 		Node: YAMLNodeConfig{
-			ListenPort:    nodeCfg.ListenPort,
-			IdentityPath:  nodeCfg.IdentityPath,
-			MinConnection: nodeCfg.MinConnection,
-			MaxConnection: nodeCfg.MaxConnection,
-			Concurrency:   nodeCfg.Concurrency,
+			ListenPort:         nodeCfg.ListenPort,
+			IdentityPath:       nodeCfg.IdentityPath,
+			MinConnection:      nodeCfg.MinConnection,
+			MaxConnection:      nodeCfg.MaxConnection,
+			Concurrency:        nodeCfg.Concurrency,
+			EnableRelay:        nodeCfg.EnableRelay,
+			EnableHolePunch:    nodeCfg.EnableHolePunch,
+			EnableAutoNAT:      nodeCfg.EnableAutoNAT,
+			RelayServers:       nodeCfg.RelayServers,
+			EnableRelayService: nodeCfg.EnableRelayService,
+			ExternalIP:         nodeCfg.ExternalIP,
 			Discovery: YAMLDiscoveryConfig{
 				EnabledMethods: []string{"mdns"},
 				MDNS: YAMLMDNSConfig{
@@ -267,6 +283,14 @@ func (y *YAMLConfig) ToNodeConfig() node.Config {
 	if y.Node.Concurrency != 0 {
 		cfg.Concurrency = y.Node.Concurrency
 	}
+
+	// NAT Traversal settings
+	cfg.EnableRelay = y.Node.EnableRelay
+	cfg.EnableHolePunch = y.Node.EnableHolePunch
+	cfg.EnableAutoNAT = y.Node.EnableAutoNAT
+	cfg.RelayServers = y.Node.RelayServers
+	cfg.EnableRelayService = y.Node.EnableRelayService
+	cfg.ExternalIP = y.Node.ExternalIP
 
 	cfg.DiscoveryConfig = y.ToDiscoveryConfig()
 

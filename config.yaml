@@ -27,6 +27,30 @@ node:
   
   # Max concurrent request handling
   concurrency: 10
+
+  # NAT Traversal Configuration
+  # Enable relay client - allows connecting via relay servers when direct connection fails
+  enable_relay: true
+  
+  # Enable hole punching (DCUtR) - attempts direct connection after initial relay
+  enable_hole_punch: true
+  
+  # Enable AutoNAT - detects if node is behind NAT
+  enable_auto_nat: true
+  
+  # Your EC2 relay server address
+  # Format: /ip4/<EC2_PUBLIC_IP>/tcp/<PORT>/p2p/<RELAY_PEER_ID>
+  relay_servers:
+    - "/ip4/YOUR_EC2_IP/tcp/4001/p2p/YOUR_RELAY_PEER_ID"
+  
+  # Set to true ONLY on your EC2 relay server
+  enable_relay_service: false
+
+  # External IP for cloud instances (EC2, GCP, etc.)
+  # When running as a relay server, set this to your public IP
+  # libp2p can't auto-detect public IPs on cloud instances
+  # Peer ID is added automatically - only specify the IP
+  external_ip: ""
   
   # Discovery configuration
   discovery:
