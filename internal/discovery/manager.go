@@ -143,7 +143,7 @@ func (m *Manager) startBootstrap() error {
 		return nil
 	}
 
-	m.bootstrap = NewBootstrap(m.host, m.bus, m.config.Bootstrap)
+	m.bootstrap = NewBootstrap(m.host, m.bus, m.config.Bootstrap, m.logger)
 	return m.bootstrap.Start()
 }
 
