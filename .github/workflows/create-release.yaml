@@ -28,11 +28,14 @@ jobs:
         with:
           go-version-file: go.mod
 
-      - name: Build binary
+      - name: Build binaries
         run: |
           mkdir -p bin
           go mod tidy
-          go build -o bin/p2p-storage ./cmd/node/main.go
+          # Build for Linux
+          GOOS=linux GOARCH=amd64 go build -o bin/p2p-storage-linux-amd64 ./cmd/node/main.go
+          # Build for Windows
+          GOOS=windows GOARCH=amd64 go build -o bin/p2p-storage-windows-amd64.exe ./cmd/node/main.go
 
       - name: Verify build
         run: |
@@ -50,6 +53,8 @@ jobs:
         with:
           tag_name: ${{ github.event.inputs.version }}
           name: ${{ github.event.inputs.version }}
-          files: bin/p2p-storage
+          files: |
+            bin/p2p-storage-linux-amd64
+            bin/p2p-storage-windows-amd64.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
