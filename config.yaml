@@ -1,0 +1,77 @@
+# P2P Storage Configuration
+# All durations use Go duration format: "5s", "1m", "2h30m", etc.
+
+# Storage directory for files
+storage_root: "./storage"
+
+# Log file path (empty for stdout)
+log_file: ""
+
+# Time to wait for peer discovery
+peer_wait: 5s
+
+# Operation timeout (for store/get commands)
+timeout: 5m
+
+# Node configuration
+node:
+  # Port to listen on (0 for random)
+  listen_port: 0
+  
+  # Path to node identity key file
+  identity_path: "./node.key"
+  
+  # Connection limits
+  min_connection: 50
+  max_connection: 100
+  
+  # Max concurrent request handling
+  concurrency: 10
+  
+  # Discovery configuration
+  discovery:
+    # Enabled discovery methods: mdns, dht, bootstrap
+    enabled_methods:
+      - mdns
+    
+    # mDNS configuration
+    mdns:
+      service_name: "storage"
+      interval: 5s
+    
+    # DHT configuration
+    dht:
+      rendezvous_string: "p2p-storage-network"
+      discovery_interval: 10s
+      # Mode: "server", "client", or "auto"
+      mode: "auto"
+    
+    # Bootstrap peer configuration
+    bootstrap:
+      # List of bootstrap peer multiaddrs
+      peers: []
+      connection_timeout: 30s
+      retry_interval: 10s
+      max_retries: 3
+
+# Protocol configuration
+protocol:
+  # Maximum message size in bytes (default: 1MB)
+  max_message_size: 1048576
+  read_timeout: 5s
+  write_timeout: 5s
+  handler_timeout: 5s
+
+# Rate limiter configuration
+rate_limiter:
+  # Max concurrent requests
+  limit: 100
+  # Rate window duration
+  window: 1s
+  # Entry TTL
+  ttl: 5m
+
+# Encryption configuration
+encryption:
+  enabled: true
+  key_path: "./encryption.key"
