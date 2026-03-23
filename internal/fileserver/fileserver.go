@@ -151,50 +151,57 @@ func (fs *FileServer) notifyTransferComplete(key string, err error) {
 }
 
 func (fs *FileServer) OnPeerConnect(conn libp2p_network.Conn) {
-	fs.peerLock.Lock()
-	defer fs.peerLock.Unlock()
-
-	peerID := conn.RemotePeer().String()
-
-	// Always update the connection (in case of reconnection or upgrade)
-	fs.peers[peerID] = Peer{
-		ID:   conn.RemotePeer(),
-		Conn: conn,
-	}
-	fs.logger.Info("peer registered", observability.Fields{
-		"peer_id":    peerID,
-		"peer_count": len(fs.peers),
-	})
-}
-
-func (fs *FileServer) OnPeerDisconnect(conn libp2p_network.Conn) {
 	peerID := conn.RemotePeer()
 
-	// Debounce disconnect - wait a bit then check if still disconnected
-	// This handles connection upgrades and duplicate connection pruning
+	// Wait for connection to stabilize before registering
+	// This avoids registering during connection negotiation/upgrade
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 
-		// Re-check if peer is still disconnected after the delay
-		if fs.node != nil && fs.node.Network().Connectedness(peerID) == libp2p_network.Connected {
-			// Peer reconnected or was never truly disconnected
+		// Verify connection is still established after stabilization period
+		if fs.node == nil || fs.node.Network().Connectedness(peerID) != libp2p_network.Connected {
 			return
 		}
 
 		fs.peerLock.Lock()
 		defer fs.peerLock.Unlock()
 
-		// Double-check peer still exists (might have been removed already)
-		if _, exists := fs.peers[peerID.String()]; !exists {
+		// Only add if not already tracked
+		if _, exists := fs.peers[peerID.String()]; exists {
 			return
 		}
 
-		delete(fs.peers, peerID.String())
-		fs.logger.Info("peer unregistered", observability.Fields{
+		fs.peers[peerID.String()] = Peer{
+			ID:   peerID,
+			Conn: conn,
+		}
+		fs.logger.Info("peer registered", observability.Fields{
 			"peer_id":    peerID.String(),
 			"peer_count": len(fs.peers),
 		})
 	}()
+}
+
+func (fs *FileServer) OnPeerDisconnect(conn libp2p_network.Conn) {
+	peerID := conn.RemotePeer()
+
+	fs.peerLock.Lock()
+	defer fs.peerLock.Unlock()
+
+	// Only remove if truly disconnected (no remaining connections)
+	if fs.node != nil && fs.node.Network().Connectedness(peerID) == libp2p_network.Connected {
+		return
+	}
+
+	if _, exists := fs.peers[peerID.String()]; !exists {
+		return
+	}
+
+	delete(fs.peers, peerID.String())
+	fs.logger.Info("peer unregistered", observability.Fields{
+		"peer_id":    peerID.String(),
+		"peer_count": len(fs.peers),
+	})
 }
 
 func (fs *FileServer) Start() error {
