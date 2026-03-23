@@ -72,7 +72,7 @@ func NewNode(cfg Config) (host.Host, error) {
 
 	// Enable AutoNAT to detect if we're behind NAT
 	if cfg.EnableAutoNAT {
-		opts = append(opts, libp2p.EnableNATService())
+		opts = append(opts, libp2p.EnableAutoNATv2())
 	}
 
 	// Configure static relay servers (your EC2 relay)
