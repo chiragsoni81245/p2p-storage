@@ -154,9 +154,17 @@ func (fs *FileServer) OnPeerConnect(conn libp2p_network.Conn) {
 	defer fs.peerLock.Unlock()
 
 	peerID := conn.RemotePeer().String()
-	fs.peers[peerID] = Peer{
-		ID:   conn.RemotePeer(),
-		Conn: conn,
+	
+	// Only add if not already tracked (avoid duplicate events)
+	if _, exists := fs.peers[peerID]; !exists {
+		fs.peers[peerID] = Peer{
+			ID:   conn.RemotePeer(),
+			Conn: conn,
+		}
+		fs.logger.Info("peer registered", observability.Fields{
+			"peer_id":    peerID,
+			"peer_count": len(fs.peers),
+		})
 	}
 }
 
@@ -165,7 +173,19 @@ func (fs *FileServer) OnPeerDisconnect(conn libp2p_network.Conn) {
 	defer fs.peerLock.Unlock()
 
 	peerID := conn.RemotePeer().String()
+	
+	// Only remove if the peer is truly disconnected (no remaining connections)
+	// Check using the host's network state
+	if fs.node != nil && fs.node.Network().Connectedness(conn.RemotePeer()) == libp2p_network.Connected {
+		// Still connected via another connection, don't remove
+		return
+	}
+	
 	delete(fs.peers, peerID)
+	fs.logger.Info("peer unregistered", observability.Fields{
+		"peer_id":    peerID,
+		"peer_count": len(fs.peers),
+	})
 }
 
 func (fs *FileServer) Start() error {
@@ -200,9 +220,14 @@ func (fs *FileServer) Start() error {
 	// Initialize the file transfer handler for streaming file data
 	fs.transferHandler = NewFileTransferHandler(node, fs, fs.logger)
 
+	// Subscribe BEFORE starting goroutines to avoid race condition
+	// Events published before subscription is ready would be lost
+	peerConnectCh := fs.bus.Subscribe(event.PeerConnected)
+	peerDisconnectCh := fs.bus.Subscribe(event.PeerDisconnected)
+
 	// Listen for peer connections and register them
 	go func() {
-		for evt := range fs.bus.Subscribe(event.PeerConnected) {
+		for evt := range peerConnectCh {
 			pe := evt.Data.(network.PeerEvent)
 			fs.OnPeerConnect(pe.Conn)
 		}
@@ -210,7 +235,7 @@ func (fs *FileServer) Start() error {
 
 	// Listen for peer disconnections and unregister them
 	go func() {
-		for evt := range fs.bus.Subscribe(event.PeerDisconnected) {
+		for evt := range peerDisconnectCh {
 			pe := evt.Data.(network.PeerEvent)
 			fs.OnPeerDisconnect(pe.Conn)
 		}
