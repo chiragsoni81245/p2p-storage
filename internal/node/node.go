@@ -48,6 +48,9 @@ func NewNode(cfg Config) (host.Host, error) {
 
 		// Conn Manager
 		libp2p.ConnectionManager(cm),
+
+		// Enable AutoNAT to detect if we're behind NAT
+		libp2p.EnableAutoNATv2(),
 	}
 
 	// Configure announce addresses (for EC2/cloud instances with public IP)
@@ -72,7 +75,7 @@ func NewNode(cfg Config) (host.Host, error) {
 
 	// Enable AutoNAT to detect if we're behind NAT
 	if cfg.EnableAutoNAT {
-		opts = append(opts, libp2p.EnableAutoNATv2())
+		opts = append(opts, libp2p.EnableNATService())
 	}
 
 	// Configure static relay servers (your EC2 relay)
