@@ -71,8 +71,7 @@ node:
     # Bootstrap peer configuration
     bootstrap:
       # List of bootstrap peer multiaddrs
-      peers: 
-        - "/ip4/3.84.201.57/tcp/4001/p2p/12D3KooWLhiAVaVs1kXLxfPfSRyy4iEXsFeC9znCs8TkDfcJZmqc"
+      peers: []
       connection_timeout: 30s
       retry_interval: 10s
       max_retries: 3
