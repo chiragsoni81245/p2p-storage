@@ -150,16 +150,47 @@ func (fs *FileServer) notifyTransferComplete(key string, err error) {
 	delete(fs.waiters, key)
 }
 
+// StorageProtocolID is the protocol identifier for storage operations
+const StorageProtocolID = "/storage/1.0.0"
+
 func (fs *FileServer) OnPeerConnect(conn libp2p_network.Conn) {
 	peerID := conn.RemotePeer()
 
-	// Wait for connection to stabilize before registering
-	// This avoids registering during connection negotiation/upgrade
+	// Wait for connection to stabilize before checking protocol support
+	// This avoids checking during connection negotiation/upgrade
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 
 		// Verify connection is still established after stabilization period
 		if fs.node == nil || fs.node.Network().Connectedness(peerID) != libp2p_network.Connected {
+			return
+		}
+
+		// Check if peer supports our storage protocol
+		// Don't disconnect non-storage peers - they're useful for DHT routing and relay
+		protocols, err := fs.node.Peerstore().GetProtocols(peerID)
+		if err != nil {
+			fs.logger.Debug("failed to get peer protocols", observability.Fields{
+				"peer_id": peerID.String(),
+				"error":   err.Error(),
+			})
+			return
+		}
+
+		supportsStorage := false
+		for _, p := range protocols {
+			if string(p) == StorageProtocolID {
+				supportsStorage = true
+				break
+			}
+		}
+
+		if !supportsStorage {
+			fs.logger.Debug("peer doesn't support storage protocol, not adding to storage peers", observability.Fields{
+				"peer_id":   peerID.String(),
+				"protocols": protocols,
+			})
+			// Don't disconnect - peer is still useful for DHT/relay
 			return
 		}
 
@@ -175,7 +206,18 @@ func (fs *FileServer) OnPeerConnect(conn libp2p_network.Conn) {
 			ID:   peerID,
 			Conn: conn,
 		}
-		fs.logger.Info("peer registered", observability.Fields{
+
+		// Protect storage peers from ConnManager trimming by tagging them
+		// Higher value = more important, less likely to be trimmed
+		fs.node.ConnManager().TagPeer(peerID, "storage-peer", 100)
+
+		// Notify network manager that this is a storage-capable peer
+		fs.bus.Publish(event.Event{
+			Type: event.StoragePeerRegistered,
+			Data: network.StoragePeerEvent{PeerID: peerID},
+		})
+
+		fs.logger.Info("storage peer registered", observability.Fields{
 			"peer_id":    peerID.String(),
 			"peer_count": len(fs.peers),
 		})
@@ -198,7 +240,17 @@ func (fs *FileServer) OnPeerDisconnect(conn libp2p_network.Conn) {
 	}
 
 	delete(fs.peers, peerID.String())
-	fs.logger.Info("peer unregistered", observability.Fields{
+
+	// Remove the protection tag since peer is no longer a storage peer
+	fs.node.ConnManager().UntagPeer(peerID, "storage-peer")
+
+	// Notify network manager that this storage peer is gone
+	fs.bus.Publish(event.Event{
+		Type: event.StoragePeerUnregistered,
+		Data: network.StoragePeerEvent{PeerID: peerID},
+	})
+
+	fs.logger.Info("storage peer unregistered", observability.Fields{
 		"peer_id":    peerID.String(),
 		"peer_count": len(fs.peers),
 	})
@@ -231,7 +283,7 @@ func (fs *FileServer) Start() error {
 
 	limiter := middleware.NewLimiter(fs.Config.NodeConfig.Concurrency)
 
-	fs.proto = protocol.New(node, "/storage/1.0.0", handler, fs.Config.ProtocolConfig, fs.logger, limiter)
+	fs.proto = protocol.New(node, StorageProtocolID, handler, fs.Config.ProtocolConfig, fs.logger, limiter)
 
 	// Initialize the file transfer handler for streaming file data
 	fs.transferHandler = NewFileTransferHandler(node, fs, fs.logger)
@@ -259,7 +311,12 @@ func (fs *FileServer) Start() error {
 
 	// Attach network manager to control connections
 	// Must be after subscriptions to ensure events are received
-	network.NewManager(fs.Config.NodeConfig.MaxConnection, fs.logger, node, fs.bus)
+	// Connection limits are handled by libp2p's ResourceManager (configured in node.go)
+	network.NewManager(
+		fs.logger,
+		node,
+		fs.bus,
+	)
 
 	// Start discovery with configured methods
 	fs.discoveryMgr = discovery.NewManager(node, fs.bus, fs.Config.NodeConfig.DiscoveryConfig, fs.logger)

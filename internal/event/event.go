@@ -7,10 +7,12 @@ import (
 type EventType string
 
 const (
-	PeerDiscovered      EventType = "peer:discovered"
-	PeerConnected       EventType = "peer:connected"
-	PeerDisconnected    EventType = "peer:disconnected"
-	FileTransferComplete EventType = "file:transfer:complete"
+	PeerDiscovered          EventType = "peer:discovered"
+	PeerConnected           EventType = "peer:connected"
+	PeerDisconnected        EventType = "peer:disconnected"
+	StoragePeerRegistered   EventType = "peer:storage:registered"   // Peer supports storage protocol
+	StoragePeerUnregistered EventType = "peer:storage:unregistered" // Storage peer disconnected
+	FileTransferComplete    EventType = "file:transfer:complete"
 )
 
 type Event struct {
