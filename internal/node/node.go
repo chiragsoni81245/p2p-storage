@@ -6,6 +6,7 @@ import (
 	libp2p "github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/peer"
+	rcmgr "github.com/libp2p/go-libp2p/p2p/host/resource-manager"
 	connmgr "github.com/libp2p/go-libp2p/p2p/net/connmgr"
 	"github.com/libp2p/go-libp2p/p2p/protocol/circuitv2/relay"
 	ma "github.com/multiformats/go-multiaddr"
@@ -19,6 +20,24 @@ func NewNode(cfg Config) (host.Host, error) {
 
 	if err != nil {
 		return nil, err
+	}
+
+	// Configure ResourceManager with connection limits
+	// Start with default scaling limits and customize connection limits
+	scalingLimits := rcmgr.DefaultLimits
+	scalingLimits.SystemBaseLimit.Conns = cfg.MaxConnection * 2
+	scalingLimits.SystemBaseLimit.ConnsInbound = cfg.MaxConnection
+	scalingLimits.SystemBaseLimit.ConnsOutbound = cfg.MaxConnection
+	scalingLimits.SystemBaseLimit.Streams = cfg.MaxConnection * 100
+	scalingLimits.SystemBaseLimit.StreamsInbound = cfg.MaxConnection * 50
+	scalingLimits.SystemBaseLimit.StreamsOutbound = cfg.MaxConnection * 50
+
+	// Build concrete limits from scaling config
+	limits := scalingLimits.AutoScale()
+
+	rm, err := rcmgr.NewResourceManager(rcmgr.NewFixedLimiter(limits))
+	if err != nil {
+		return nil, fmt.Errorf("failed to create resource manager: %w", err)
 	}
 
 	priv, err := LoadOrCreateIdentity(cfg.IdentityPath)
@@ -48,6 +67,9 @@ func NewNode(cfg Config) (host.Host, error) {
 
 		// Conn Manager
 		libp2p.ConnectionManager(cm),
+
+		// Resource Manager (provides hard limits on connections/streams)
+		libp2p.ResourceManager(rm),
 
 		// Enable AutoNAT to detect if we're behind NAT
 		libp2p.EnableAutoNATv2(),

@@ -9,7 +9,6 @@ import (
 
 	"github.com/chiragsoni81245/p2p-storage/internal/discovery"
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
-	"github.com/chiragsoni81245/p2p-storage/internal/node"
 	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 	"github.com/libp2p/go-libp2p"
 	"github.com/libp2p/go-libp2p/core/host"
@@ -31,16 +30,12 @@ func TestNewManager(t *testing.T) {
 
 	bus := event.NewBus()
 	logger := observability.NewLogger(observability.Fields{"service": "test"})
-	cfg := node.Config{
-		MaxConnection: 10,
-	}
 
-	manager := NewManager(cfg.MaxConnection, logger, h, bus)
+	manager := NewManager(logger, h, bus)
 
 	require.NotNil(t, manager)
 	assert.Equal(t, h, manager.host)
 	assert.Equal(t, bus, manager.bus)
-	assert.Equal(t, cfg.MaxConnection, manager.maxConnection)
 	assert.Equal(t, logger, manager.logger)
 }
 
@@ -53,12 +48,9 @@ func TestManager_Connect_OnPeerDiscovered(t *testing.T) {
 
 	bus := event.NewBus()
 	logger := observability.NewLogger(observability.Fields{"service": "test"})
-	cfg := node.Config{
-		MaxConnection: 10,
-	}
 
 	// Create manager for h1
-	_ = NewManager(cfg.MaxConnection, logger, h1, bus)
+	_ = NewManager(logger, h1, bus)
 
 	// Give the manager's listen goroutine time to start
 	time.Sleep(50 * time.Millisecond)
@@ -92,9 +84,6 @@ func TestManager_Connect_SkipsAlreadyConnected(t *testing.T) {
 
 	bus := event.NewBus()
 	logger := observability.NewLogger(observability.Fields{"service": "test"})
-	cfg := node.Config{
-		MaxConnection: 10,
-	}
 
 	// Pre-connect h1 to h2
 	h1.Peerstore().AddAddrs(h2.ID(), h2.Addrs(), time.Hour)
@@ -102,7 +91,7 @@ func TestManager_Connect_SkipsAlreadyConnected(t *testing.T) {
 	require.NoError(t, err)
 
 	// Create manager
-	_ = NewManager(cfg.MaxConnection, logger, h1, bus)
+	_ = NewManager(logger, h1, bus)
 
 	// Publish peer discovered event (should be skipped)
 	bus.Publish(event.Event{
@@ -122,72 +111,15 @@ func TestManager_Connect_SkipsAlreadyConnected(t *testing.T) {
 	assert.Equal(t, network.Connected, h1.Network().Connectedness(h2.ID()))
 }
 
-func TestManager_Connect_RespectsMaxConnections(t *testing.T) {
-	h1, cleanup1 := createTestHost(t)
-	defer cleanup1()
-
-	bus := event.NewBus()
-	logger := observability.NewLogger(observability.Fields{"service": "test"})
-	cfg := node.Config{
-		MaxConnection: 2, // Allow 2 connections
-	}
-
-	// Create manager
-	_ = NewManager(cfg.MaxConnection, logger, h1, bus)
-
-	// Give the manager's listen goroutine time to start
-	time.Sleep(50 * time.Millisecond)
-
-	// Create multiple peers
-	hosts := make([]host.Host, 5)
-	for i := 0; i < 5; i++ {
-		h, cleanup := createTestHost(t)
-		hosts[i] = h
-		defer cleanup()
-
-		h1.Peerstore().AddAddrs(h.ID(), h.Addrs(), time.Hour)
-	}
-
-	// Publish discovery events for all peers sequentially
-	for _, h := range hosts {
-		bus.Publish(event.Event{
-			Type: event.PeerDiscovered,
-			Data: discovery.PeerDiscoveredEvent{
-				AddrInfo: peer.AddrInfo{
-					ID:    h.ID(),
-					Addrs: h.Addrs(),
-				},
-			},
-		})
-		time.Sleep(100 * time.Millisecond) // Give time for connection attempt
-	}
-
-	// Wait for connections to settle
-	time.Sleep(500 * time.Millisecond)
-
-	// Count actual connections
-	connectedPeers := h1.Network().Peers()
-
-	// Manager should stop accepting after max connections
-	// Note: The check is >= MaxConnection, so it allows up to MaxConnection peers
-	// Also note that libp2p might have internal connection pooling behavior
-	// The main point is it shouldn't connect to ALL peers
-	assert.LessOrEqual(t, len(connectedPeers), cfg.MaxConnection+1,
-		"should respect max connection limit (got %d, max %d)", len(connectedPeers), cfg.MaxConnection)
-}
-
 func TestManager_Connect_HandlesBadAddress(t *testing.T) {
 	h1, cleanup1 := createTestHost(t)
 	defer cleanup1()
 
 	bus := event.NewBus()
 	logger := observability.NewLogger(observability.Fields{"service": "test"})
-	cfg := node.Config{
-		MaxConnection: 10,
-	}
 
 	// Create manager
-	_ = NewManager(cfg.MaxConnection, logger, h1, bus)
+	_ = NewManager(logger, h1, bus)
 
 	// Publish discovery event with invalid peer (no addresses or unreachable)
 	fakePeerID, _ := peer.Decode("QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N")

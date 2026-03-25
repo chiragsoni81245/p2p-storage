@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 	"github.com/libp2p/go-libp2p"
 	"github.com/stretchr/testify/assert"
 	"github.com/stretchr/testify/require"
@@ -29,8 +30,9 @@ func TestNewBootstrap(t *testing.T) {
 
 	bus := event.NewBus()
 	cfg := DefaultBootstrapConfig()
+	logger := observability.NewLogger(observability.Fields{"service": "test"})
 
-	bootstrap := NewBootstrap(h, bus, cfg)
+	bootstrap := NewBootstrap(h, bus, cfg, logger)
 
 	assert.NotNil(t, bootstrap)
 	assert.Equal(t, h, bootstrap.host)
@@ -45,8 +47,9 @@ func TestBootstrap_Start_NoPeers(t *testing.T) {
 
 	bus := event.NewBus()
 	cfg := DefaultBootstrapConfig()
+	logger := observability.NewLogger(observability.Fields{"service": "test"})
 
-	bootstrap := NewBootstrap(h, bus, cfg)
+	bootstrap := NewBootstrap(h, bus, cfg, logger)
 
 	err = bootstrap.Start()
 	assert.NoError(t, err)
@@ -75,7 +78,7 @@ func TestBootstrap_ConnectsToBootstrapPeer(t *testing.T) {
 		MaxRetries:        1,
 	}
 
-	bootstrap := NewBootstrap(h2, bus, cfg)
+	bootstrap := NewBootstrap(h2, bus, cfg, observability.NewLogger(observability.Fields{"service": "test"}))
 
 	err = bootstrap.Start()
 	require.NoError(t, err)
@@ -110,7 +113,7 @@ func TestBootstrap_IgnoresSelf(t *testing.T) {
 		MaxRetries:        0,
 	}
 
-	bootstrap := NewBootstrap(h, bus, cfg)
+	bootstrap := NewBootstrap(h, bus, cfg, observability.NewLogger(observability.Fields{"service": "test"}))
 
 	err = bootstrap.Start()
 	require.NoError(t, err)
@@ -144,7 +147,7 @@ func TestBootstrap_AddBootstrapPeer(t *testing.T) {
 		MaxRetries:        1,
 	}
 
-	bootstrap := NewBootstrap(h2, bus, cfg)
+	bootstrap := NewBootstrap(h2, bus, cfg, observability.NewLogger(observability.Fields{"service": "test"}))
 
 	h1Addr := fmt.Sprintf("%s/p2p/%s", h1.Addrs()[0], h1.ID())
 	err = bootstrap.AddBootstrapPeer(h1Addr)
@@ -171,7 +174,7 @@ func TestBootstrap_AddBootstrapPeer_InvalidAddress(t *testing.T) {
 	bus := event.NewBus()
 	cfg := DefaultBootstrapConfig()
 
-	bootstrap := NewBootstrap(h, bus, cfg)
+	bootstrap := NewBootstrap(h, bus, cfg, observability.NewLogger(observability.Fields{"service": "test"}))
 
 	err = bootstrap.AddBootstrapPeer("invalid-address")
 	assert.Error(t, err)
@@ -187,7 +190,7 @@ func TestBootstrap_Stop(t *testing.T) {
 	bus := event.NewBus()
 	cfg := DefaultBootstrapConfig()
 
-	bootstrap := NewBootstrap(h, bus, cfg)
+	bootstrap := NewBootstrap(h, bus, cfg, observability.NewLogger(observability.Fields{"service": "test"}))
 	err = bootstrap.Start()
 	require.NoError(t, err)
 

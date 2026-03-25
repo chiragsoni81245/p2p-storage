@@ -9,3 +9,8 @@ type PeerEvent struct {
 	PeerID peer.ID
 	Conn   network.Conn
 }
+
+// StoragePeerEvent is published when a peer's storage capability status changes
+type StoragePeerEvent struct {
+	PeerID peer.ID
+}

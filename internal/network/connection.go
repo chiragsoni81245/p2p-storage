@@ -13,28 +13,25 @@ import (
 )
 
 type Manager struct {
-	host          host.Host
-	bus           *event.Bus
-	maxConnection int
-	logger        *observability.Logger
+	host   host.Host
+	bus    *event.Bus
+	logger *observability.Logger
 }
 
-func NewManager(maxConnection int, logger *observability.Logger, h host.Host, bus *event.Bus) *Manager {
+func NewManager(logger *observability.Logger, h host.Host, bus *event.Bus) *Manager {
 	m := &Manager{
-		host:          h,
-		bus:           bus,
-		maxConnection: maxConnection,
-		logger:        logger,
+		host:   h,
+		bus:    bus,
+		logger: logger,
 	}
 
 	h.Network().Notify(NewNotifier(bus))
 
-	// Subscribe BEFORE returning to avoid race condition with discovery
-	// The subscription must be ready before discovery starts publishing events
-	ch := bus.Subscribe(event.PeerDiscovered)
+	// Subscribe to peer discovery events
+	discoveryCh := bus.Subscribe(event.PeerDiscovered)
 	logger.Info("network manager subscribed to peer discovery events", observability.Fields{})
 
-	go m.listen(ch)
+	go m.listen(discoveryCh)
 
 	return m
 }
@@ -66,17 +63,9 @@ func (m *Manager) connect(pi peer.AddrInfo) {
 		return
 	}
 
-	if len(m.host.Network().Peers()) >= m.maxConnection {
-		m.logger.Info("max connections reached, skipping peer", observability.Fields{
-			"peer_id":        pi.ID.String(),
-			"current_peers":  len(m.host.Network().Peers()),
-			"max_connection": m.maxConnection,
-		})
-		return
-	}
-
 	err := m.host.Connect(context.Background(), pi)
 	if err != nil {
+		// Connection may fail due to ResourceManager limits, which is expected
 		m.logger.Error("connection failed", observability.Fields{
 			"peer_id": pi.ID.String(),
 			"addrs":   pi.Addrs,
