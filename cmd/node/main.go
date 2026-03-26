@@ -105,6 +105,36 @@ and serve stored files on request.`,
   p2p-storage -s ./data daemon`,
 }
 
+// Flags for send command
+var (
+	allowRelay    bool
+	holePunchWait time.Duration
+)
+
+// sendCmd sends a file directly to a specific peer
+var sendCmd = &cobra.Command{
+	Use:   "send <filepath> <peer-multiaddr>",
+	Short: "Send a file directly to a specific peer",
+	Long: `Send a file to a specific peer using their multiaddr.
+
+By default, this command only uses direct connections (no relay).
+If both you and the peer are behind NAT, hole punching will be attempted.
+If direct connection cannot be established, the transfer will fail.
+
+Use --allow-relay to permit relayed transfers (not recommended for sensitive data).`,
+	Args:         cobra.ExactArgs(2),
+	RunE:         runSend,
+	SilenceUsage: true,
+	Example: `  # Send to a peer (direct connection only)
+  p2p-storage send ./myfile.txt /ip4/192.168.1.100/tcp/4001/p2p/12D3KooW...
+
+  # Send with longer hole punch wait time
+  p2p-storage send --hole-punch-wait 30s ./myfile.txt /ip4/.../p2p/12D3KooW...
+
+  # Allow relayed transfer (not recommended for sensitive data)
+  p2p-storage send --allow-relay ./myfile.txt /ip4/.../p2p/12D3KooW...`,
+}
+
 func init() {
 	// Global persistent flags
 	rootCmd.PersistentFlags().StringVarP(&configPath, "config", "c", config.DefaultConfigPath, "path to config file")
@@ -137,6 +167,11 @@ func init() {
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(getFileKeyCmd)
 	rootCmd.AddCommand(daemonCmd)
+	rootCmd.AddCommand(sendCmd)
+
+	// Flags for send command
+	sendCmd.Flags().BoolVar(&allowRelay, "allow-relay", false, "allow transfer over relayed connections (not recommended)")
+	sendCmd.Flags().DurationVar(&holePunchWait, "hole-punch-wait", 10*time.Second, "time to wait for hole punching to establish direct connection")
 }
 
 // getLogWriter returns the appropriate log writer based on config
@@ -355,5 +390,110 @@ func runDaemon(cmd *cobra.Command, args []string) error {
 	<-sigCh
 
 	fmt.Println("\nShutting down...")
+	return nil
+}
+
+func runSend(cmd *cobra.Command, args []string) error {
+	filePath := args[0]
+	peerAddr := args[1]
+
+	// Check file exists
+	info, err := os.Stat(filePath)
+	if os.IsNotExist(err) {
+		return fmt.Errorf("file does not exist: %s", filePath)
+	}
+	if info.IsDir() {
+		return fmt.Errorf("cannot send a directory: %s", filePath)
+	}
+
+	// Generate file key
+	key, err := store.GenerateFileKey(filePath)
+	if err != nil {
+		return err
+	}
+
+	fmt.Printf("File: %s\n", filepath.Base(filePath))
+	fmt.Printf("Size: %d bytes\n", info.Size())
+	fmt.Printf("Key:  %s\n\n", key)
+
+	// Start the file server
+	fs, closeLog, err := startFileServer()
+	if err != nil {
+		return err
+	}
+	defer closeLog()
+	defer fs.Stop()
+
+	// Store file locally first
+	if !fs.HasFile(key) {
+		fmt.Println("Storing file locally...")
+		ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
+		_, err := fs.StoreFile(ctx, key, filePath, 0) // 0 = don't replicate yet
+		cancel()
+		if err != nil {
+			return fmt.Errorf("failed to store file locally: %w", err)
+		}
+	}
+
+	// Connect to the peer
+	fmt.Printf("Connecting to peer: %s\n", peerAddr)
+	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
+	peerID, err := fs.ConnectToPeer(ctx, peerAddr)
+	cancel()
+	if err != nil {
+		return fmt.Errorf("failed to connect to peer: %w", err)
+	}
+	fmt.Printf("Connected to: %s\n", peerID.String())
+
+	// Check connection type
+	connType := fs.GetConnectionType(peerID)
+	fmt.Printf("Connection type: %s\n", connType)
+
+	// If not direct, wait for hole punching
+	if connType == "relayed" {
+		if !allowRelay {
+			fmt.Printf("\nWaiting for hole punching (%s)...\n", holePunchWait)
+			ctx, cancel := context.WithTimeout(context.Background(), holePunchWait)
+			err := fs.WaitForDirectConnection(ctx, peerID, holePunchWait)
+			cancel()
+
+			if err != nil {
+				// Check one more time
+				if fs.IsDirectConnection(peerID) {
+					fmt.Println("Direct connection established!")
+				} else {
+					return fmt.Errorf("cannot establish direct connection to peer (only relayed connection available)\n" +
+						"Use --allow-relay to permit relayed transfers (not recommended for sensitive data)")
+				}
+			} else {
+				fmt.Println("Direct connection established via hole punching!")
+			}
+		} else {
+			fmt.Println("\n⚠ WARNING: Using relayed connection (encrypted data will pass through relay server)")
+		}
+	}
+
+	// Send the file
+	fmt.Println("\nSending file...")
+	ctx, cancel = context.WithTimeout(context.Background(), yamlConfig.Timeout)
+	defer cancel()
+
+	if allowRelay {
+		err = fs.StoreFileToPeer(ctx, peerID, key)
+	} else {
+		err = fs.StoreFileToPeerDirect(ctx, peerID, key)
+	}
+
+	if err != nil {
+		if err == fileserver.ErrRelayedConnection {
+			return fmt.Errorf("connection became relayed during transfer - aborting for security")
+		}
+		return fmt.Errorf("failed to send file: %w", err)
+	}
+
+	fmt.Println("\n✓ File sent successfully!")
+	fmt.Printf("  To peer: %s\n", peerID.String())
+	fmt.Printf("  Key: %s\n", key)
+
 	return nil
 }
