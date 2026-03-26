@@ -2,9 +2,11 @@ package fileserver
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -21,6 +23,7 @@ import (
 	"github.com/libp2p/go-libp2p/core/host"
 	libp2p_network "github.com/libp2p/go-libp2p/core/network"
 	"github.com/libp2p/go-libp2p/core/peer"
+	ma "github.com/multiformats/go-multiaddr"
 )
 
 type FileServerOpts struct {
@@ -721,4 +724,104 @@ func (fs *FileServer) GetNodeAddresses() []string {
 		addrs = append(addrs, fmt.Sprintf("%s/p2p/%s", addr, fs.node.ID()))
 	}
 	return addrs
+}
+
+// ErrRelayedConnection is returned when only relayed connections exist to a peer
+var ErrRelayedConnection = errors.New("only relayed connection available, direct connection required")
+
+// ConnectToPeer connects to a peer using their multiaddr string
+// Publishes a PeerDiscovered event so the network manager handles the connection
+// Returns the peer ID on success
+func (fs *FileServer) ConnectToPeer(ctx context.Context, multiaddr string) (peer.ID, error) {
+	maddr, err := ma.NewMultiaddr(multiaddr)
+	if err != nil {
+		return "", fmt.Errorf("invalid multiaddr: %w", err)
+	}
+
+	peerInfo, err := peer.AddrInfoFromP2pAddr(maddr)
+	if err != nil {
+		return "", fmt.Errorf("failed to parse peer info from multiaddr: %w", err)
+	}
+
+	// Publish discovery event - network manager will handle the connection
+	fs.bus.Publish(event.Event{
+		Type: event.PeerDiscovered,
+		Data: discovery.PeerDiscoveredEvent{
+			AddrInfo: *peerInfo,
+		},
+	})
+
+	// Wait for connection to be established
+	ticker := time.NewTicker(100 * time.Millisecond)
+	defer ticker.Stop()
+
+	for {
+		select {
+		case <-ctx.Done():
+			return "", fmt.Errorf("timeout waiting for connection: %w", ctx.Err())
+		case <-ticker.C:
+			if fs.node.Network().Connectedness(peerInfo.ID) == libp2p_network.Connected {
+				fs.logger.Info("connected to peer", observability.Fields{
+					"peer": peerInfo.ID.String(),
+				})
+				return peerInfo.ID, nil
+			}
+		}
+	}
+}
+
+// IsDirectConnection checks if we have a direct (non-relayed) connection to a peer
+// Returns true if at least one direct connection exists
+func (fs *FileServer) IsDirectConnection(peerID peer.ID) bool {
+	conns := fs.node.Network().ConnsToPeer(peerID)
+	for _, conn := range conns {
+		addr := conn.RemoteMultiaddr().String()
+		// Relayed connections contain "/p2p-circuit/" in the multiaddr
+		if !strings.Contains(addr, "/p2p-circuit/") {
+			return true
+		}
+	}
+	return false
+}
+
+// GetConnectionType returns "direct" or "relayed" based on the connection type
+func (fs *FileServer) GetConnectionType(peerID peer.ID) string {
+	if fs.IsDirectConnection(peerID) {
+		return "direct"
+	}
+	return "relayed"
+}
+
+// WaitForDirectConnection waits for hole punching to establish a direct connection
+// Returns nil if direct connection is established, error if timeout or only relayed
+func (fs *FileServer) WaitForDirectConnection(ctx context.Context, peerID peer.ID, timeout time.Duration) error {
+	deadline := time.Now().Add(timeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+
+	for time.Now().Before(deadline) {
+		if fs.IsDirectConnection(peerID) {
+			return nil
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			// Check again
+		}
+	}
+
+	if fs.IsDirectConnection(peerID) {
+		return nil
+	}
+	return ErrRelayedConnection
+}
+
+// StoreFileToPeerDirect sends a file to a peer only if direct connection exists
+// Returns ErrRelayedConnection if only relayed connection is available
+func (fs *FileServer) StoreFileToPeerDirect(ctx context.Context, peerID peer.ID, key string) error {
+	if !fs.IsDirectConnection(peerID) {
+		return ErrRelayedConnection
+	}
+	return fs.StoreFileToPeer(ctx, peerID, key)
 }
