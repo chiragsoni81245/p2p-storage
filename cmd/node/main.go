@@ -7,12 +7,14 @@ import (
 	"os"
 	"os/signal"
 	"path/filepath"
+	"strings"
 	"syscall"
 	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/config"
 	"github.com/chiragsoni81245/p2p-storage/internal/fileserver"
 	"github.com/chiragsoni81245/p2p-storage/internal/store"
+	"github.com/libp2p/go-libp2p/core/peer"
 	"github.com/spf13/cobra"
 )
 
@@ -435,23 +437,67 @@ func runSend(cmd *cobra.Command, args []string) error {
 		}
 	}
 
-	// Connect to the peer
-	fmt.Printf("Connecting to peer: %s\n", peerAddr)
+	var peerID peer.ID
 	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
-	peerID, err := fs.ConnectToPeer(ctx, peerAddr)
-	cancel()
-	if err != nil {
-		return fmt.Errorf("failed to connect to peer: %w", err)
-	}
-	fmt.Printf("Connected to: %s\n", peerID.String())
 
-	// Check connection type
-	connType := fs.GetConnectionType(peerID)
-	fmt.Printf("Connection type: %s\n", connType)
+	// Check if input address is relayed one
+	if !strings.Contains(peerAddr, "p2p-circuit") {
+		// if its direct then try direct connection and it not able to connect to error out
+		fmt.Printf("Connecting to peer: %s\n", peerAddr)
+		peerID, err = fs.ConnectToPeer(ctx, peerAddr)
+		if err != nil {
+			return fmt.Errorf("failed to connect to peer: %w", err)
+		}
+		fmt.Printf("Connected to: %s\n", peerID.String())
+	} else {
+		// if its relayed
 
-	// If not direct, wait for hole punching
-	if connType == "relayed" {
+		// connect to this specific relay
+		relayAddr := strings.Split(peerAddr, "/p2p-circuit/")[0]
+
+		fmt.Printf("Connecting to relay: %s\n", relayAddr)
+		relayPeerID, err := fs.ConnectToPeer(ctx, relayAddr)
+		if err != nil {
+			return fmt.Errorf("failed to connect to peer: %w", err)
+		}
+		fmt.Printf("Connected to relay: %s\n", relayPeerID.String())
+
+		// wait for the reservation on relay by keep checking the address
+		ticker := time.NewTicker(5 * time.Second)
+		foundRelayReservation := false
+
+		relayReservationWaitLoop:
+		for {
+			select {
+			case <-ctx.Done():
+            	return fmt.Errorf("timed out waiting for relay reservation after %s", yamlConfig.Timeout)
+			case <-ticker.C:
+				for _, addr := range fs.GetNodeAddresses() {
+					if strings.Contains(addr, relayPeerID.String()) {
+						fmt.Println("✓ Relay reservation ACTIVE:", addr)
+						foundRelayReservation = true
+					}
+				}
+				if !foundRelayReservation {
+					fmt.Println("✗ No relay reservation yet")
+					continue
+				}
+				break relayReservationWaitLoop
+			}
+		}
+		ticker.Stop()
+
+		// connect to the peer through this relay
+		fmt.Printf("Connecting to peer through relay for direct connection negotiation: %s\n", peerAddr)
+		peerID, err = fs.ConnectToPeer(ctx, peerAddr)
+		if err != nil {
+			return fmt.Errorf("failed to connect to peer through relay: %w", err)
+		}
+		fmt.Printf("Connected to peer through relay: %s\n", peerID.String())
+		cancel()
+
 		if !allowRelay {
+			// wait for that peer to be connect with direct connection
 			fmt.Printf("\nWaiting for hole punching (%s)...\n", holePunchWait)
 			ctx, cancel := context.WithTimeout(context.Background(), holePunchWait)
 			err := fs.WaitForDirectConnection(ctx, peerID, holePunchWait)
@@ -463,7 +509,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 					fmt.Println("Direct connection established!")
 				} else {
 					return fmt.Errorf("cannot establish direct connection to peer (only relayed connection available)\n" +
-						"Use --allow-relay to permit relayed transfers (not recommended for sensitive data)")
+					"Use --allow-relay to permit relayed transfers (not recommended for sensitive data)")
 				}
 			} else {
 				fmt.Println("Direct connection established via hole punching!")
