@@ -27,6 +27,24 @@ go build -o p2p-storage ./cmd/node
 
 ## CLI Commands
 
+### Send file to a peer (direct / nat-hole-punching / relayed)
+
+```bash
+p2p-storage send <filepath> <peer_address>
+
+# Examples
+#-- Direct Peer --
+p2p-storage send ./myfile.txt /ip4/3.90.43.169/tcp/9999/p2p/12D3KooWKncG1bn23yiLDM8fhEmCQMbCgdXmsBrYJP3hcZkeUauy
+
+#-- Direct Peer through hole punching -- (peer to which we are sending should already be connected and registered to this same relay through daemon mode)
+p2p-storage send ./myfile.txt /ip4/3.90.43.169/tcp/4001/p2p/12D3KooWJ7Q8u2KvMD1XfkhctUfgsNvDFd9RVJwjtKwJbj74kUaC/p2p-circuit/p2p/12D3KooWKncG1bn23yiLDM8fhEmCQMbCgdXmsBrYJP3hcZkeUauy
+
+#-- Peer through relay --
+p2p-storage send --allow-relay ./myfile.txt /ip4/3.90.43.169/tcp/4001/p2p/12D3KooWJ7Q8u2KvMD1XfkhctUfgsNvDFd9RVJwjtKwJbj74kUaC/p2p-circuit/p2p/12D3KooWKncG1bn23yiLDM8fhEmCQMbCgdXmsBrYJP3hcZkeUauy
+```
+
+Send a file directly to a peer through encrypted connection, and most via pure p2p connection, unless any peer is behind a strict NAT in this case a relayed connection is only option
+
 ### Store a file
 
 ```bash
