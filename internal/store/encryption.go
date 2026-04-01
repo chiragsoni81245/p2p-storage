@@ -7,9 +7,10 @@ import (
 	"encoding/binary"
 	"fmt"
 	"io"
-	"log"
 	"os"
 	"path/filepath"
+
+	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 )
 
 const (
@@ -33,11 +34,11 @@ func generateEncryptionKey() ([]byte, error) {
 }
 
 // loadOrCreateEncryptionKey loads an existing key from file or creates a new one
-func loadOrCreateEncryptionKey(keyPath string) ([]byte, error) {
+func loadOrCreateEncryptionKey(logger *observability.Logger, keyPath string) ([]byte, error) {
 	// Try to load existing key
 	if data, err := os.ReadFile(keyPath); err == nil {
 		if len(data) == 32 {
-			log.Printf("loaded existing encryption key from %s", keyPath)
+			logger.Info(fmt.Sprintf("loaded existing encryption key from %s", keyPath), observability.Fields{})
 			return data, nil
 		}
 		return nil, fmt.Errorf("invalid key file: expected 32 bytes, got %d", len(data))
@@ -60,7 +61,7 @@ func loadOrCreateEncryptionKey(keyPath string) ([]byte, error) {
 		return nil, fmt.Errorf("failed to save encryption key: %w", err)
 	}
 
-	log.Printf("generated and saved new encryption key to %s", keyPath)
+	logger.Info(fmt.Sprintf("generated and saved new encryption key to %s", keyPath), observability.Fields{})
 	return key, nil
 }
 

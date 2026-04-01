@@ -69,6 +69,14 @@ func (fs *FileServer) Handle(ctx context.Context, peerID peer.ID, msg core.Messa
 }
 
 func NewFileServer(opts FileServerOpts) (*FileServer, error) {
+	// Use provided log writer or default to stdout
+	logWriter := opts.LogWriter
+	if logWriter == nil {
+		logWriter = os.Stdout
+	}
+	logLevel := observability.ParseLogLevel(opts.LogLevel)
+	logger := observability.NewLoggerWithLevel(logWriter, observability.Fields{}, logLevel)
+
 	// Default encryption to enabled
 	encryption := store.EncryptionConfig{Enabled: true}
 	if opts.Encryption != nil {
@@ -79,16 +87,10 @@ func NewFileServer(opts FileServerOpts) (*FileServer, error) {
 		Root:              opts.StorageRoot,
 		PathTransformFunc: opts.PathTransformFunc,
 		Encryption:        encryption,
+		Logger: logger,
 	}
 
-	// Use provided log writer or default to stdout
-	logWriter := opts.LogWriter
-	if logWriter == nil {
-		logWriter = os.Stdout
-	}
 
-	logLevel := observability.ParseLogLevel(opts.LogLevel)
-	logger := observability.NewLoggerWithLevel(logWriter, observability.Fields{}, logLevel)
 	metrics := observability.NewMetrics()
 	bus := event.NewBus()
 	scorer := network.NewPeerScorer() // Manage peer score and use best peers
