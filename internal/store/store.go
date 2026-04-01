@@ -116,7 +116,7 @@ func NewStore(opts StoreOpts) (*Store, error) {
 			keyPath = filepath.Join(opts.Root, ".encryption_key")
 		}
 
-		key, err := loadOrCreateEncryptionKey(keyPath)
+		key, err := loadOrCreateEncryptionKey(logger, keyPath)
 		if err != nil {
 			return nil, fmt.Errorf("encryption enabled but failed to initialize: %w", err)
 		}
