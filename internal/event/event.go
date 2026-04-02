@@ -39,10 +39,9 @@ type GetProgressData struct {
 	TotalBytes    int64
 }
 
-// GetCompleteData is published when a file is successfully retrieved
+// GetCompleteData is published when a file is successfully retrieved into local storage
 type GetCompleteData struct {
-	Key       string
-	SavedPath string
+	Key string
 }
 
 // GetFailedData is published when a get operation fails
