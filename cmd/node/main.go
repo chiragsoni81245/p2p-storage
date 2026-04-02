@@ -3,18 +3,14 @@ package main
 import (
 	"context"
 	"fmt"
-	"io"
 	"os"
-	"os/signal"
 	"path/filepath"
-	"strings"
-	"syscall"
 	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/config"
+	"github.com/chiragsoni81245/p2p-storage/internal/event"
 	"github.com/chiragsoni81245/p2p-storage/internal/fileserver"
-	"github.com/chiragsoni81245/p2p-storage/internal/store"
-	"github.com/libp2p/go-libp2p/core/peer"
+	"github.com/chiragsoni81245/p2p-storage/pkg/operations"
 	"github.com/spf13/cobra"
 )
 
@@ -93,20 +89,6 @@ after it has been stored by any peer.`,
 	Example:      `  p2p-storage get-file-key ./myfile.txt`,
 }
 
-// daemonCmd runs the node as a daemon
-var daemonCmd = &cobra.Command{
-	Use:   "daemon",
-	Short: "Run as a background daemon",
-	Long: `Start the P2P node and keep it running.
-
-The daemon will accept connections from other peers
-and serve stored files on request.`,
-	RunE:         runDaemon,
-	SilenceUsage: true,
-	Example: `  p2p-storage daemon
-  p2p-storage -s ./data daemon`,
-}
-
 // Flags for send command
 var (
 	allowRelay    bool
@@ -168,7 +150,6 @@ func init() {
 	rootCmd.AddCommand(storeCmd)
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(getFileKeyCmd)
-	rootCmd.AddCommand(daemonCmd)
 	rootCmd.AddCommand(sendCmd)
 
 	// Flags for send command
@@ -176,42 +157,30 @@ func init() {
 	sendCmd.Flags().DurationVar(&holePunchWait, "hole-punch-wait", 10*time.Second, "time to wait for hole punching to establish direct connection")
 }
 
-// getLogWriter returns the appropriate log writer based on config
-func getLogWriter() (io.Writer, func(), error) {
+// getLogWriter returns the appropriate log writer based on config.
+func getLogWriter() (*os.File, error) {
 	if yamlConfig.LogFile == "" {
-		return os.Stdout, func() {}, nil
+		return os.Stdout, nil
 	}
+	return os.OpenFile(yamlConfig.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+}
 
-	f, err := os.OpenFile(yamlConfig.LogFile, os.O_CREATE|os.O_WRONLY|os.O_APPEND, 0644)
+// startServer starts a FileServer and prints node identity info to stdout.
+func startServer() (*fileserver.FileServer, func(), error) {
+	logWriter, err := getLogWriter()
 	if err != nil {
 		return nil, nil, fmt.Errorf("failed to open log file: %w", err)
 	}
 
-	return f, func() { f.Close() }, nil
-}
+	closeLog := func() {}
+	if logWriter != os.Stdout {
+		closeLog = func() { logWriter.Close() }
+	}
 
-// startFileServer creates and starts the file server
-func startFileServer() (*fileserver.FileServer, func(), error) {
-	logWriter, closeLog, err := getLogWriter()
+	fs, err := operations.StartServer(yamlConfig, logWriter)
 	if err != nil {
+		closeLog()
 		return nil, nil, err
-	}
-
-	fs, err := fileserver.NewFileServer(fileserver.FileServerOpts{
-		StorageRoot:       yamlConfig.StorageRoot,
-		PathTransformFunc: store.CASPathTransformFunc,
-		LogWriter:         logWriter,
-		LogLevel:          yamlConfig.LogLevel,
-		Config:            yamlConfig.ToConfig(),
-	})
-	if err != nil {
-		closeLog()
-		return nil, nil, fmt.Errorf("failed to create file server: %w", err)
-	}
-
-	if err := fs.Start(); err != nil {
-		closeLog()
-		return nil, nil, fmt.Errorf("failed to start node: %w", err)
 	}
 
 	fmt.Printf("Node ID: %s\n", fs.GetNodeID().String())
@@ -222,35 +191,10 @@ func startFileServer() (*fileserver.FileServer, func(), error) {
 	return fs, closeLog, nil
 }
 
-// waitForPeers waits for peer discovery
-func waitForPeers(fs *fileserver.FileServer) int {
-	fmt.Printf("Discovering peers (%s)...\n", yamlConfig.PeerWait)
-
-	deadline := time.Now().Add(yamlConfig.PeerWait)
-	ticker := time.NewTicker(500 * time.Millisecond)
-	defer ticker.Stop()
-
-	for time.Now().Before(deadline) {
-		<-ticker.C
-		if count := fs.GetConnectedPeers(); count > 0 {
-			fmt.Printf("Found %d peer(s)\n", count)
-			return count
-		}
-	}
-
-	count := fs.GetConnectedPeers()
-	if count == 0 {
-		fmt.Println("No peers found")
-	} else {
-		fmt.Printf("Found %d peer(s)\n", count)
-	}
-	return count
-}
-
 func runStore(cmd *cobra.Command, args []string) error {
 	filePath := args[0]
 
-	// Check file exists
+	// Print file info before starting the server
 	info, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
 		return fmt.Errorf("file does not exist: %s", filePath)
@@ -258,45 +202,35 @@ func runStore(cmd *cobra.Command, args []string) error {
 	if info.IsDir() {
 		return fmt.Errorf("cannot store a directory: %s", filePath)
 	}
-
-	// Generate file key
-	key, err := store.GenerateFileKey(filePath)
-	if err != nil {
-		return err
-	}
-
 	fmt.Printf("File: %s\n", filepath.Base(filePath))
-	fmt.Printf("Size: %d bytes\n", info.Size())
-	fmt.Printf("Key:  %s\n\n", key)
+	fmt.Printf("Size: %d bytes\n\n", info.Size())
 
-	// Start the file server
-	fs, closeLog, err := startFileServer()
+	fs, closeLog, err := startServer()
 	if err != nil {
 		return err
 	}
 	defer closeLog()
 	defer fs.Stop()
 
-	// Wait for peers (but don't fail if none - file will still be stored locally)
-	peerCount := waitForPeers(fs)
-
-	fmt.Println("\nStoring file...")
+	fmt.Printf("Discovering peers (%s)...\n", yamlConfig.PeerWait)
+	fmt.Println("Storing file...")
 
 	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
 	defer cancel()
 
-	count, err := fs.StoreFile(ctx, key, filePath, peerCount)
+	result, err := operations.StoreFile(ctx, fs, yamlConfig, filePath)
 	if err != nil {
-		return fmt.Errorf("failed to store file: %w", err)
+		return err
 	}
 
-	fmt.Println("\n✓ Stored locally")
-	if count > 0 {
-		fmt.Printf("✓ Replicated to %d peer(s)\n", count)
-	} else if peerCount == 0 {
+	fmt.Printf("Key:  %s\n\n", result.Key)
+	fmt.Println("✓ Stored locally")
+	if result.ReplicatedTo > 0 {
+		fmt.Printf("✓ Replicated to %d peer(s)\n", result.ReplicatedTo)
+	} else {
 		fmt.Println("⚠ No peers available for replication")
 	}
-	fmt.Printf("\nTo retrieve this file, use:\n  p2p-storage get %s\n", key)
+	fmt.Printf("\nTo retrieve this file, use:\n  p2p-storage get %s\n", result.Key)
 
 	return nil
 }
@@ -304,94 +238,62 @@ func runStore(cmd *cobra.Command, args []string) error {
 func runGet(cmd *cobra.Command, args []string) error {
 	key := args[0]
 
-	// Determine output path
 	outputPath := key[:16] + ".dat"
 	if len(args) >= 2 {
 		outputPath = args[1]
 	}
 
-	// Start the file server
-	fs, closeLog, err := startFileServer()
+	fs, closeLog, err := startServer()
 	if err != nil {
 		return err
 	}
 	defer closeLog()
 	defer fs.Stop()
 
-	// Check if file exists locally, otherwise wait for peers
-	if !fs.HasFile(key) {
-		peerCount := waitForPeers(fs)
-		if peerCount == 0 {
-			return fmt.Errorf("no peers available and file not found locally")
+	// Subscribe before firing the operation so no events are missed
+	bus := fs.GetBus()
+	progressCh := bus.Subscribe(event.FileGetProgress)
+	defer bus.Unsubscribe(event.FileGetProgress, progressCh)
+
+	// Print progress updates in background
+	requestID := key
+	go func() {
+		for evt := range progressCh {
+			if evt.RequestID != requestID {
+				continue
+			}
+			d := evt.Data.(event.GetProgressData)
+			if d.TotalBytes > 0 {
+				pct := float64(d.BytesReceived) / float64(d.TotalBytes) * 100
+				fmt.Printf("\rReceiving... %.0f%%", pct)
+			} else {
+				fmt.Print("\rReceiving...")
+			}
 		}
-		fmt.Printf("\nRequesting from %d peer(s)...\n", peerCount)
-	}
+	}()
+
+	fmt.Printf("Discovering peers (%s)...\n", yamlConfig.PeerWait)
 
 	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
 	defer cancel()
 
-	if err := fs.GetFile(ctx, key, outputPath); err != nil {
+	operations.GetFile(fs, yamlConfig, key, outputPath, requestID, bus)
+
+	savedPath, err := operations.WaitForGet(ctx, bus, requestID)
+	if err != nil {
 		return fmt.Errorf("failed to get file: %w", err)
 	}
 
-	fmt.Printf("\n✓ Saved to: %s\n", outputPath)
-
+	fmt.Printf("\n✓ Saved to: %s\n", savedPath)
 	return nil
 }
 
 func runGetFileKey(cmd *cobra.Command, args []string) error {
-	filePath := args[0]
-
-	// Check file exists
-	info, err := os.Stat(filePath)
-	if os.IsNotExist(err) {
-		return fmt.Errorf("file does not exist: %s", filePath)
-	}
-	if info.IsDir() {
-		return fmt.Errorf("cannot get key for a directory: %s", filePath)
-	}
-
-	key, err := store.GenerateFileKey(filePath)
+	key, err := operations.GetFileKey(args[0])
 	if err != nil {
 		return err
 	}
-
-	// Just print the key (good for scripting)
 	fmt.Println(key)
-
-	return nil
-}
-
-func runDaemon(cmd *cobra.Command, args []string) error {
-	fmt.Println("Starting P2P Storage daemon...")
-
-	fs, closeLog, err := startFileServer()
-	if err != nil {
-		return err
-	}
-	defer closeLog()
-	defer fs.Stop()
-
-	fmt.Printf("Storage: %s\n", yamlConfig.StorageRoot)
-	fmt.Println("\nDaemon running. Press Ctrl+C to stop.")
-
-	// Print status periodically
-	go func() {
-		ticker := time.NewTicker(30 * time.Second)
-		defer ticker.Stop()
-		for range ticker.C {
-			fmt.Printf("[%s] Peers: %d\n",
-				time.Now().Format("15:04:05"),
-				fs.GetConnectedPeers())
-		}
-	}()
-
-	// Wait for shutdown signal
-	sigCh := make(chan os.Signal, 1)
-	signal.Notify(sigCh, syscall.SIGINT, syscall.SIGTERM)
-	<-sigCh
-
-	fmt.Println("\nShutting down...")
 	return nil
 }
 
@@ -399,7 +301,6 @@ func runSend(cmd *cobra.Command, args []string) error {
 	filePath := args[0]
 	peerAddr := args[1]
 
-	// Check file exists
 	info, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
 		return fmt.Errorf("file does not exist: %s", filePath)
@@ -407,139 +308,32 @@ func runSend(cmd *cobra.Command, args []string) error {
 	if info.IsDir() {
 		return fmt.Errorf("cannot send a directory: %s", filePath)
 	}
-
-	// Generate file key
-	key, err := store.GenerateFileKey(filePath)
-	if err != nil {
-		return err
-	}
-
 	fmt.Printf("File: %s\n", filepath.Base(filePath))
-	fmt.Printf("Size: %d bytes\n", info.Size())
-	fmt.Printf("Key:  %s\n\n", key)
+	fmt.Printf("Size: %d bytes\n\n", info.Size())
 
-	// Start the file server
-	fs, closeLog, err := startFileServer()
+	fs, closeLog, err := startServer()
 	if err != nil {
 		return err
 	}
 	defer closeLog()
 	defer fs.Stop()
 
-	// Store file locally first
-	if !fs.HasFile(key) {
-		fmt.Println("Storing file locally...")
-		ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
-		_, err := fs.StoreFile(ctx, key, filePath, 0) // 0 = don't replicate yet
-		cancel()
-		if err != nil {
-			return fmt.Errorf("failed to store file locally: %w", err)
-		}
-	}
+	fmt.Println("Sending file...")
 
-	var peerID peer.ID
-	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
-
-	// Check if input address is relayed one
-	if !strings.Contains(peerAddr, "p2p-circuit") {
-		// if its direct then try direct connection and it not able to connect to error out
-		fmt.Printf("Connecting to peer: %s\n", peerAddr)
-		peerID, err = fs.ConnectToPeer(ctx, peerAddr)
-		if err != nil {
-			return fmt.Errorf("failed to connect to peer: %w", err)
-		}
-		fmt.Printf("Connected to: %s\n", peerID.String())
-	} else {
-		// if its relayed
-
-		// connect to this specific relay
-		relayAddr := strings.Split(peerAddr, "/p2p-circuit/")[0]
-
-		fmt.Printf("Connecting to relay: %s\n", relayAddr)
-		relayPeerID, err := fs.ConnectToPeer(ctx, relayAddr)
-		if err != nil {
-			return fmt.Errorf("failed to connect to peer: %w", err)
-		}
-		fmt.Printf("Connected to relay: %s\n", relayPeerID.String())
-
-		// wait for the reservation on relay by keep checking the address
-		ticker := time.NewTicker(5 * time.Second)
-		foundRelayReservation := false
-
-		relayReservationWaitLoop:
-		for {
-			select {
-			case <-ctx.Done():
-            	return fmt.Errorf("timed out waiting for relay reservation after %s", yamlConfig.Timeout)
-			case <-ticker.C:
-				for _, addr := range fs.GetNodeAddresses() {
-					if strings.Contains(addr, relayPeerID.String()) {
-						fmt.Println("✓ Relay reservation ACTIVE:", addr)
-						foundRelayReservation = true
-					}
-				}
-				if !foundRelayReservation {
-					fmt.Println("✗ No relay reservation yet")
-					continue
-				}
-				break relayReservationWaitLoop
-			}
-		}
-		ticker.Stop()
-
-		// connect to the peer through this relay
-		fmt.Printf("Connecting to peer through relay for direct connection negotiation: %s\n", peerAddr)
-		peerID, err = fs.ConnectToPeer(ctx, peerAddr)
-		if err != nil {
-			return fmt.Errorf("failed to connect to peer through relay: %w", err)
-		}
-		fmt.Printf("Connected to peer through relay: %s\n", peerID.String())
-		cancel()
-
-		if !allowRelay {
-			// wait for that peer to be connect with direct connection
-			fmt.Printf("\nWaiting for hole punching (%s)...\n", holePunchWait)
-			ctx, cancel := context.WithTimeout(context.Background(), holePunchWait)
-			err := fs.WaitForDirectConnection(ctx, peerID, holePunchWait)
-			cancel()
-
-			if err != nil {
-				// Check one more time
-				if fs.IsDirectConnection(peerID) {
-					fmt.Println("Direct connection established!")
-				} else {
-					return fmt.Errorf("cannot establish direct connection to peer (only relayed connection available)\n" +
-					"Use --allow-relay to permit relayed transfers (not recommended for sensitive data)")
-				}
-			} else {
-				fmt.Println("Direct connection established via hole punching!")
-			}
-		} else {
-			fmt.Println("\n⚠ WARNING: Using relayed connection (encrypted data will pass through relay server)")
-		}
-	}
-
-	// Send the file
-	fmt.Println("\nSending file...")
-	ctx, cancel = context.WithTimeout(context.Background(), yamlConfig.Timeout)
+	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout*3)
 	defer cancel()
 
-	if allowRelay {
-		err = fs.StoreFileToPeer(ctx, peerID, key)
-	} else {
-		err = fs.StoreFileToPeerDirect(ctx, peerID, key)
-	}
-
+	result, err := operations.SendFile(ctx, fs, yamlConfig, filePath, peerAddr, operations.SendOpts{
+		AllowRelay:    allowRelay,
+		HolePunchWait: holePunchWait,
+	})
 	if err != nil {
-		if err == fileserver.ErrRelayedConnection {
-			return fmt.Errorf("connection became relayed during transfer - aborting for security")
-		}
-		return fmt.Errorf("failed to send file: %w", err)
+		return err
 	}
 
 	fmt.Println("\n✓ File sent successfully!")
-	fmt.Printf("  To peer: %s\n", peerID.String())
-	fmt.Printf("  Key: %s\n", key)
+	fmt.Printf("  To peer: %s\n", result.PeerID)
+	fmt.Printf("  Key: %s\n", result.Key)
 
 	return nil
 }
