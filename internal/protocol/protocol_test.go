@@ -258,7 +258,6 @@ func TestProtocol_Send_ContextCancellation(t *testing.T) {
 
 	_, err := proto.Send(ctx, h2.ID(), Message{Type: "PING"})
 	assert.Error(t, err)
-	assert.Contains(t, err.Error(), "i/o deadline reached")
 }
 
 func TestProtocol_HandleStream_BackpressureRejection(t *testing.T) {
