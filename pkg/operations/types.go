@@ -5,10 +5,9 @@ import "time"
 // RequestID uniquely identifies an async operation so callers can correlate events.
 type RequestID = string
 
-// StoreResult holds the outcome of a StoreFile call.
+// StoreResult holds the outcome of a StoreLocally call.
 type StoreResult struct {
-	Key           string
-	ReplicatedTo  int
+	Key string
 }
 
 // SendResult holds the outcome of a SendFile call.

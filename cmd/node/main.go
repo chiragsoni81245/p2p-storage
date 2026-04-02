@@ -45,19 +45,18 @@ Store and retrieve files across a decentralized network of peers.
 Files are content-addressed using SHA256 hashes.`,
 }
 
-// storeCmd stores a file to the network
-var storeCmd = &cobra.Command{
+// storeLocallyCmd stores a file to local storage only
+var storeLocallyCmd = &cobra.Command{
 	Use:   "store <filepath>",
-	Short: "Store a file in the P2P network",
-	Long: `Store a local file to the P2P network.
+	Short: "Store a file in local storage",
+	Long: `Store a local file in this node's storage.
 
-The file will be distributed to all connected peers.
+The file is stored locally only and not sent to any peers.
 Returns the file key which can be used to retrieve it later.`,
 	Args:         cobra.ExactArgs(1),
-	RunE:         runStore,
+	RunE:         runStoreLocally,
 	SilenceUsage: true,
-	Example: `  p2p-storage store ./myfile.txt
-  p2p-storage store -s ./data ./document.pdf`,
+	Example: `  p2p-storage store ./myfile.txt`,
 }
 
 // getCmd retrieves a file from the network
@@ -147,7 +146,7 @@ func init() {
 	}
 
 	// Add commands
-	rootCmd.AddCommand(storeCmd)
+	rootCmd.AddCommand(storeLocallyCmd)
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(getFileKeyCmd)
 	rootCmd.AddCommand(sendCmd)
@@ -191,10 +190,9 @@ func startServer() (*fileserver.FileServer, func(), error) {
 	return fs, closeLog, nil
 }
 
-func runStore(cmd *cobra.Command, args []string) error {
+func runStoreLocally(cmd *cobra.Command, args []string) error {
 	filePath := args[0]
 
-	// Print file info before starting the server
 	info, err := os.Stat(filePath)
 	if os.IsNotExist(err) {
 		return fmt.Errorf("file does not exist: %s", filePath)
@@ -212,24 +210,16 @@ func runStore(cmd *cobra.Command, args []string) error {
 	defer closeLog()
 	defer fs.Stop()
 
-	fmt.Printf("Discovering peers (%s)...\n", yamlConfig.PeerWait)
-	fmt.Println("Storing file...")
-
 	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
 	defer cancel()
 
-	result, err := operations.StoreFile(ctx, fs, yamlConfig, filePath)
+	result, err := operations.StoreLocally(ctx, fs, filePath)
 	if err != nil {
 		return err
 	}
 
 	fmt.Printf("Key:  %s\n\n", result.Key)
 	fmt.Println("✓ Stored locally")
-	if result.ReplicatedTo > 0 {
-		fmt.Printf("✓ Replicated to %d peer(s)\n", result.ReplicatedTo)
-	} else {
-		fmt.Println("⚠ No peers available for replication")
-	}
 	fmt.Printf("\nTo retrieve this file, use:\n  p2p-storage get %s\n", result.Key)
 
 	return nil
