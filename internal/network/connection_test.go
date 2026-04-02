@@ -93,7 +93,7 @@ func TestManager_Connect_SkipsAlreadyConnected(t *testing.T) {
 	// Create manager
 	_ = NewManager(logger, h1, bus)
 
-	// Publish peer discovered event (should be skipped)
+	// Publish peer discovered event (should be skipped since already connected)
 	bus.Publish(event.Event{
 		Type: event.PeerDiscovered,
 		Data: discovery.PeerDiscoveredEvent{
@@ -104,11 +104,10 @@ func TestManager_Connect_SkipsAlreadyConnected(t *testing.T) {
 		},
 	})
 
-	// Give it a moment
-	time.Sleep(100 * time.Millisecond)
-
-	// Still should be connected (no change)
-	assert.Equal(t, network.Connected, h1.Network().Connectedness(h2.ID()))
+	// Connection state should remain Connected throughout
+	require.Never(t, func() bool {
+		return h1.Network().Connectedness(h2.ID()) != network.Connected
+	}, 200*time.Millisecond, 50*time.Millisecond, "connection should remain stable")
 }
 
 func TestManager_Connect_HandlesBadAddress(t *testing.T) {
@@ -134,8 +133,8 @@ func TestManager_Connect_HandlesBadAddress(t *testing.T) {
 		},
 	})
 
-	// Should not panic, just log error
-	time.Sleep(100 * time.Millisecond)
-
-	assert.NotEqual(t, network.Connected, h1.Network().Connectedness(fakePeerID))
+	// Should not connect — peer has no reachable addresses
+	require.Never(t, func() bool {
+		return h1.Network().Connectedness(fakePeerID) == network.Connected
+	}, 200*time.Millisecond, 50*time.Millisecond, "should not connect to unreachable peer")
 }
