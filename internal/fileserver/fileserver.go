@@ -566,9 +566,9 @@ func (fs *FileServer) StoreFile(ctx context.Context, key string, filePath string
 	return fs.StoreFileToNetwork(ctx, key, replicationFactor)
 }
 
-// GetFileFromPeer requests a file from a specific peer
-// The peer will open a transfer stream back to us with the file data
-func (fs *FileServer) GetFileFromPeer(ctx context.Context, peerID peer.ID, key string, outputPath string) error {
+// GetFileFromPeer requests a file from a specific peer and stores it locally.
+// The peer will open a transfer stream back to us with the file data.
+func (fs *FileServer) GetFileFromPeer(ctx context.Context, peerID peer.ID, key string) error {
 	fs.logger.Info("requesting file from peer", observability.Fields{
 		"peer": peerID.String(),
 		"key":  key,
@@ -617,35 +617,11 @@ func (fs *FileServer) GetFileFromPeer(ctx context.Context, peerID peer.ID, key s
 		return fmt.Errorf("file transfer completed but file not found in store")
 	}
 
-	// If output path is specified, copy from store to output path
-	// File was received decrypted and stored encrypted with our key, so use Read
-	if outputPath != "" {
-		r, _, err := fs.store.Read(key)
-		if err != nil {
-			return fmt.Errorf("failed to read file from store: %w", err)
-		}
-
-		outFile, err := os.Create(outputPath)
-		if err != nil {
-			return fmt.Errorf("failed to create output file: %w", err)
-		}
-		defer outFile.Close()
-
-		if _, err := io.Copy(outFile, r); err != nil {
-			return fmt.Errorf("failed to write output file: %w", err)
-		}
-
-		fs.logger.Info("file saved to output path", observability.Fields{
-			"key":  key,
-			"path": outputPath,
-		})
-	}
-
 	return nil
 }
 
-// GetFileFromNetwork tries to get a file from any peer that has it
-func (fs *FileServer) GetFileFromNetwork(ctx context.Context, key string, outputPath string) error {
+// GetFileFromNetwork tries to get a file from any peer that has it and stores it locally.
+func (fs *FileServer) GetFileFromNetwork(ctx context.Context, key string) error {
 	peers := fs.ListPeers()
 	if len(peers) == 0 {
 		return fmt.Errorf("no connected peers")
@@ -653,7 +629,7 @@ func (fs *FileServer) GetFileFromNetwork(ctx context.Context, key string, output
 
 	// Try each peer until we get the file
 	for _, p := range peers {
-		if err := fs.GetFileFromPeer(ctx, p, key, outputPath); err != nil {
+		if err := fs.GetFileFromPeer(ctx, p, key); err != nil {
 			fs.logger.Info("peer did not have file, trying next", observability.Fields{
 				"peer":  p.String(),
 				"key":   key,
@@ -672,46 +648,39 @@ func (fs *FileServer) HasFile(key string) bool {
 	return fs.store.Has(key)
 }
 
-// GetFile gets a file - first checks local storage, then tries network if not found
-// If outputPath is specified, saves the file to that path
-func (fs *FileServer) GetFile(ctx context.Context, key string, outputPath string) error {
-	// Check if file exists locally first
+// GetFile ensures a file is in local storage, fetching from the network if needed.
+func (fs *FileServer) GetFile(ctx context.Context, key string) error {
 	if fs.store.Has(key) {
 		fs.logger.Info("file found locally", observability.Fields{"key": key})
-
-		if outputPath != "" {
-			r, _, err := fs.store.Read(key)
-			if err != nil {
-				// Decryption failed - file may have been received from a peer
-				// (encrypted with their key) or stored with a different key
-				fs.logger.Error("failed to decrypt local file, may be from peer", observability.Fields{
-					"key":   key,
-					"error": err.Error(),
-				})
-				return fmt.Errorf("failed to read local file: %w (file may have been received from a peer and encrypted with their key)", err)
-			}
-
-			outFile, err := os.Create(outputPath)
-			if err != nil {
-				return fmt.Errorf("failed to create output file: %w", err)
-			}
-			defer outFile.Close()
-
-			if _, err := io.Copy(outFile, r); err != nil {
-				return fmt.Errorf("failed to write output file: %w", err)
-			}
-
-			fs.logger.Info("local file saved to output path", observability.Fields{
-				"key":  key,
-				"path": outputPath,
-			})
-		}
 		return nil
 	}
 
-	// File not found locally, try network
 	fs.logger.Info("file not found locally, trying network", observability.Fields{"key": key})
-	return fs.GetFileFromNetwork(ctx, key, outputPath)
+	return fs.GetFileFromNetwork(ctx, key)
+}
+
+// WriteFileTo copies a locally stored file to destPath.
+func (fs *FileServer) WriteFileTo(key, destPath string) error {
+	r, _, err := fs.store.Read(key)
+	if err != nil {
+		return fmt.Errorf("failed to read file from store: %w", err)
+	}
+
+	outFile, err := os.Create(destPath)
+	if err != nil {
+		return fmt.Errorf("failed to create output file: %w", err)
+	}
+	defer outFile.Close()
+
+	if _, err := io.Copy(outFile, r); err != nil {
+		return fmt.Errorf("failed to write output file: %w", err)
+	}
+
+	fs.logger.Info("file written to destination", observability.Fields{
+		"key":  key,
+		"path": destPath,
+	})
+	return nil
 }
 
 // GetBus returns the internal event bus so callers can subscribe to events.

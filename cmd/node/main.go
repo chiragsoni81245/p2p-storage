@@ -267,14 +267,18 @@ func runGet(cmd *cobra.Command, args []string) error {
 	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
 	defer cancel()
 
-	operations.GetFile(fs, yamlConfig, key, outputPath, requestID, bus)
+	operations.GetFile(fs, yamlConfig, key, requestID, bus)
 
-	savedPath, err := operations.WaitForGet(ctx, bus, requestID)
-	if err != nil {
+	if _, err := operations.WaitForGet(ctx, bus, requestID); err != nil {
 		return fmt.Errorf("failed to get file: %w", err)
 	}
 
-	fmt.Printf("\n✓ Saved to: %s\n", savedPath)
+	// File is now in local storage — copy it to the requested output path
+	if err := fs.WriteFileTo(key, outputPath); err != nil {
+		return fmt.Errorf("failed to save file: %w", err)
+	}
+
+	fmt.Printf("\n✓ Saved to: %s\n", outputPath)
 	return nil
 }
 
