@@ -714,6 +714,11 @@ func (fs *FileServer) GetFile(ctx context.Context, key string, outputPath string
 	return fs.GetFileFromNetwork(ctx, key, outputPath)
 }
 
+// GetBus returns the internal event bus so callers can subscribe to events.
+func (fs *FileServer) GetBus() *event.Bus {
+	return fs.bus
+}
+
 // GetNodeID returns this node's peer ID
 func (fs *FileServer) GetNodeID() peer.ID {
 	return fs.node.ID()
