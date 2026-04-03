@@ -8,6 +8,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/chiragsoni81245/p2p-storage/internal/event"
 	"github.com/chiragsoni81245/p2p-storage/internal/observability"
 	"github.com/libp2p/go-libp2p/core/host"
 	"github.com/libp2p/go-libp2p/core/network"
@@ -107,7 +108,7 @@ func (fth *FileTransferHandler) cleanupStaleTransfers() {
 }
 
 // handleIncomingStream handles incoming file transfer streams
-// Protocol: [1 byte: key length][key bytes][file data...]
+// Protocol: [2 bytes: key length][key bytes][8 bytes: file size][file data...]
 func (fth *FileTransferHandler) handleIncomingStream(s network.Stream) {
 	defer s.Close()
 
@@ -164,23 +165,36 @@ func (fth *FileTransferHandler) handleIncomingStream(s network.Stream) {
 		"peer": remotePeer.String(),
 	})
 
+	fth.fs.bus.Publish(event.Event{
+		Type: event.FileReceiveStarted,
+		Data: event.ReceiveStartedData{Key: key, Size: fileSize, PeerID: remotePeer.String()},
+	})
+
 	// Reset deadline for file transfer (longer timeout)
 	_ = s.SetReadDeadline(time.Now().Add(TransferTimeout))
 
-	// Create a limited reader to avoid reading more than expected
+	// Wrap the limited reader to track progress and publish events
 	limitedReader := io.LimitReader(s, fileSize)
+	progressReader := &progressTrackingReader{
+		r:       limitedReader,
+		key:     key,
+		total:   fileSize,
+		bus:     fth.fs.bus,
+	}
 
 	// Write to store - will encrypt with local key
-	written, err := fth.fs.store.Write(key, limitedReader)
+	written, err := fth.fs.store.Write(key, progressReader)
 	if err != nil {
 		fth.logger.Error("failed to write file to store", observability.Fields{
 			"error": err.Error(),
 			"key":   key,
 			"peer":  remotePeer.String(),
 		})
-		// Notify waiters of failure
+		fth.fs.bus.Publish(event.Event{
+			Type: event.FileReceiveFailed,
+			Data: event.ReceiveFailedData{Key: key, Err: err},
+		})
 		fth.fs.notifyTransferComplete(key, err)
-		// Send failure response
 		s.Write([]byte{0})
 		return
 	}
@@ -191,11 +205,38 @@ func (fth *FileTransferHandler) handleIncomingStream(s network.Stream) {
 		"peer": remotePeer.String(),
 	})
 
-	// Notify waiters of success
-	fth.fs.notifyTransferComplete(key, nil)
+	fth.fs.bus.Publish(event.Event{
+		Type: event.FileReceiveComplete,
+		Data: event.ReceiveCompleteData{Key: key, Size: written},
+	})
 
-	// Send success response
+	fth.fs.notifyTransferComplete(key, nil)
 	s.Write([]byte{1})
+}
+
+// progressTrackingReader wraps a reader and publishes FileReceiveProgress events.
+type progressTrackingReader struct {
+	r       io.Reader
+	key     string
+	total   int64
+	written int64
+	bus     *event.Bus
+}
+
+func (p *progressTrackingReader) Read(buf []byte) (int, error) {
+	n, err := p.r.Read(buf)
+	if n > 0 {
+		p.written += int64(n)
+		p.bus.Publish(event.Event{
+			Type: event.FileReceiveProgress,
+			Data: event.ReceiveProgressData{
+				Key:           p.key,
+				BytesReceived: p.written,
+				TotalBytes:    p.total,
+			},
+		})
+	}
+	return n, err
 }
 
 // SendFile opens a new stream to the peer and sends the file

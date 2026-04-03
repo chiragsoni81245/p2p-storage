@@ -11,18 +11,21 @@ const (
 
 // Response data values
 const (
-	DataSuccess      = "success"
-	DataFound        = "found"
-	DataNotFound     = "file not found"
-	DataReadFailed   = "failed to read file"
-	DataEmptyKey     = "key cannot be empty"
-	DataPeerNotFound = "peer not registered"
-	DataInvalidMsg   = "invalid message format"
-	DataUnknownType  = "unknown message type"
+	DataSuccess         = "success"
+	DataFound           = "found"
+	DataNotFound        = "file not found"
+	DataReadFailed      = "failed to read file"
+	DataEmptyKey        = "key cannot be empty"
+	DataPeerNotFound    = "peer not registered"
+	DataInvalidMsg      = "invalid message format"
+	DataUnknownType     = "unknown message type"
+	DataSessionRejected = "session rejected"
+	DataAlreadyExists   = "file already exists"
 )
 
 type Message struct {
-	Type string `json:"type"`
-	Key  string `json:"key,omitempty"`
-	Data string `json:"data,omitempty"`
+	Type    string `json:"type"`
+	Key     string `json:"key,omitempty"`
+	Data    string `json:"data,omitempty"`
+	Session string `json:"session,omitempty"`
 }

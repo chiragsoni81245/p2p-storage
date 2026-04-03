@@ -20,4 +20,5 @@ type SendResult struct {
 type SendOpts struct {
 	AllowRelay    bool
 	HolePunchWait time.Duration
+	Session       string
 }

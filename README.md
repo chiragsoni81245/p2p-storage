@@ -10,6 +10,7 @@ Files are content-addressed using SHA256 hashes and stored locally with AES-256 
 - AES-256 encryption at rest with streaming encryption
 - Multiple discovery methods: mDNS (local), DHT (distributed), and bootstrap peers
 - Direct peer-to-peer file transfer with NAT hole punching and relay fallback
+- Session-based receive mode: only accept transfers from senders with the correct session name
 - Connection management with configurable limits
 - Rate limiting and backpressure to protect nodes from overload
 - Event-driven architecture with a pub/sub bus
@@ -79,6 +80,28 @@ p2p-storage send --allow-relay ./myfile.txt /ip4/3.90.43.169/tcp/4001/p2p/12D3Ko
 
 Sends a file directly to a specific peer. The file is stored locally first, then transferred. By default only a direct connection is used; if both peers are behind NAT, hole punching is attempted. Use `--allow-relay` to permit transfer over a relayed connection.
 
+If the receiver is running with `--session`, supply the matching name via `--session` or the transfer will be rejected before the stream opens. If the receiver already has the file it will also be rejected.
+
+### Receive files from peers
+
+```bash
+p2p-storage receive --session <session-name>
+
+# Example
+p2p-storage receive --session mysession
+```
+
+Starts the node, prints its addresses, and waits for incoming file transfers. Only senders that supply the matching `--session` name are accepted. Progress for each incoming file is shown as a live progress bar. Press Ctrl+C to stop.
+
+```
+Node ID: 12D3KooW...
+Address: /ip4/192.168.1.10/tcp/52341/p2p/12D3KooW...
+Session: mysession
+Waiting for incoming transfers... (Ctrl+C to stop)
+```
+
+Share one of the printed addresses with the sender so they can connect.
+
 ### Global flags
 
 | Flag | Short | Default | Description |
@@ -98,6 +121,13 @@ Sends a file directly to a specific peer. The file is stored locally first, then
 |------|---------|-------------|
 | `--allow-relay` | false | Allow transfer over a relayed connection |
 | `--hole-punch-wait` | `10s` | Time to wait for hole punching before giving up |
+| `--session` | | Session name required by the receiver |
+
+### Receive-specific flags
+
+| Flag | Default | Description |
+|------|---------|-------------|
+| `--session` | (required) | Session name that senders must supply |
 
 ## Peer Discovery
 
@@ -162,7 +192,7 @@ Key defaults:
 ```
 cmd/node/           - CLI entry point (Cobra commands)
 pkg/
-  operations/       - Reusable operations (store, get, send) for CLI and web use
+  operations/       - Reusable operations (store, get, send, receive) for CLI and web use
 internal/
   config/           - Configuration loading and merging
   core/             - Message handler interface
