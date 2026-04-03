@@ -19,6 +19,12 @@ const (
 	FileGetProgress EventType = "file:get:progress"
 	FileGetComplete EventType = "file:get:complete"
 	FileGetFailed   EventType = "file:get:failed"
+
+	// Receive session events
+	FileReceiveStarted  EventType = "file:receive:started"
+	FileReceiveProgress EventType = "file:receive:progress"
+	FileReceiveComplete EventType = "file:receive:complete"
+	FileReceiveFailed   EventType = "file:receive:failed"
 )
 
 type Event struct {
@@ -46,6 +52,32 @@ type GetCompleteData struct {
 
 // GetFailedData is published when a get operation fails
 type GetFailedData struct {
+	Key string
+	Err error
+}
+
+// ReceiveStartedData is published when an incoming file transfer begins
+type ReceiveStartedData struct {
+	Key    string
+	Size   int64
+	PeerID string
+}
+
+// ReceiveProgressData is published periodically during an incoming transfer
+type ReceiveProgressData struct {
+	Key           string
+	BytesReceived int64
+	TotalBytes    int64
+}
+
+// ReceiveCompleteData is published when an incoming transfer finishes successfully
+type ReceiveCompleteData struct {
+	Key  string
+	Size int64
+}
+
+// ReceiveFailedData is published when an incoming transfer fails
+type ReceiveFailedData struct {
 	Key string
 	Err error
 }

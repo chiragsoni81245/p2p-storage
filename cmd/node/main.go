@@ -4,7 +4,9 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"os/signal"
 	"path/filepath"
+	"syscall"
 	"time"
 
 	"github.com/chiragsoni81245/p2p-storage/internal/config"
@@ -12,6 +14,8 @@ import (
 	"github.com/chiragsoni81245/p2p-storage/internal/fileserver"
 	"github.com/chiragsoni81245/p2p-storage/pkg/operations"
 	"github.com/spf13/cobra"
+	"github.com/vbauerster/mpb/v8"
+	"github.com/vbauerster/mpb/v8/decor"
 )
 
 var (
@@ -92,7 +96,25 @@ after it has been stored by any peer.`,
 var (
 	allowRelay    bool
 	holePunchWait time.Duration
+	sendSession   string
 )
+
+// Flags for receive command
+var receiveSession string
+
+// receiveCmd starts a session and waits for incoming file transfers
+var receiveCmd = &cobra.Command{
+	Use:   "receive",
+	Short: "Wait to receive files from peers",
+	Long: `Start a receive session and wait for incoming file transfers.
+
+Only senders that supply the correct --session name will be accepted.
+The node's addresses are printed so you can share them with the sender.
+Press Ctrl+C to stop.`,
+	RunE:         runReceive,
+	SilenceUsage: true,
+	Example: `  p2p-storage receive --session mysession`,
+}
 
 // sendCmd sends a file directly to a specific peer
 var sendCmd = &cobra.Command{
@@ -150,10 +172,16 @@ func init() {
 	rootCmd.AddCommand(getCmd)
 	rootCmd.AddCommand(getFileKeyCmd)
 	rootCmd.AddCommand(sendCmd)
+	rootCmd.AddCommand(receiveCmd)
 
 	// Flags for send command
 	sendCmd.Flags().BoolVar(&allowRelay, "allow-relay", false, "allow transfer over relayed connections (not recommended)")
 	sendCmd.Flags().DurationVar(&holePunchWait, "hole-punch-wait", 10*time.Second, "time to wait for hole punching to establish direct connection")
+	sendCmd.Flags().StringVar(&sendSession, "session", "", "session name required by the receiver (optional)")
+
+	// Flags for receive command
+	receiveCmd.Flags().StringVar(&receiveSession, "session", "", "session name that senders must supply (required)")
+	_ = receiveCmd.MarkFlagRequired("session")
 }
 
 // getLogWriter returns the appropriate log writer based on config.
@@ -320,6 +348,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	result, err := operations.SendFile(ctx, fs, yamlConfig, filePath, peerAddr, operations.SendOpts{
 		AllowRelay:    allowRelay,
 		HolePunchWait: holePunchWait,
+		Session:       sendSession,
 	})
 	if err != nil {
 		return err
@@ -329,5 +358,70 @@ func runSend(cmd *cobra.Command, args []string) error {
 	fmt.Printf("  To peer: %s\n", result.PeerID)
 	fmt.Printf("  Key: %s\n", result.Key)
 
+	return nil
+}
+
+func runReceive(cmd *cobra.Command, args []string) error {
+	fs, closeLog, err := startServer()
+	if err != nil {
+		return err
+	}
+	defer closeLog()
+	defer fs.Stop()
+
+	fmt.Printf("Session: %s\n", receiveSession)
+	fmt.Println("Waiting for incoming transfers... (Ctrl+C to stop)")
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	// Cancel on Ctrl+C
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Println("\nShutting down...")
+		cancel()
+	}()
+
+	// One mpb progress container, shared across all files
+	p := mpb.NewWithContext(ctx)
+	bars := make(map[string]*mpb.Bar)
+
+	operations.StartReceiveSession(ctx, fs, receiveSession, func(evt event.Event) {
+		switch evt.Type {
+		case event.FileReceiveStarted:
+			d := evt.Data.(event.ReceiveStartedData)
+			bar := p.AddBar(d.Size,
+				mpb.PrependDecorators(
+					decor.Name(d.Key[:min(16, len(d.Key))], decor.WC{C: decor.DindentRight | decor.DextraSpace}),
+					decor.CountersKibiByte("% .2f / % .2f"),
+				),
+				mpb.AppendDecorators(decor.EwmaETA(decor.ET_STYLE_GO, 30)),
+			)
+			bars[d.Key] = bar
+		case event.FileReceiveProgress:
+			d := evt.Data.(event.ReceiveProgressData)
+			if bar, ok := bars[d.Key]; ok {
+				bar.SetCurrent(d.BytesReceived)
+			}
+		case event.FileReceiveComplete:
+			d := evt.Data.(event.ReceiveCompleteData)
+			if bar, ok := bars[d.Key]; ok {
+				bar.SetTotal(d.Size, true)
+				delete(bars, d.Key)
+			}
+			fmt.Printf("✓ Received: %s (%d bytes)\n", d.Key, d.Size)
+		case event.FileReceiveFailed:
+			d := evt.Data.(event.ReceiveFailedData)
+			if bar, ok := bars[d.Key]; ok {
+				bar.Abort(true)
+				delete(bars, d.Key)
+			}
+			fmt.Printf("✗ Failed:   %s (%v)\n", d.Key, d.Err)
+		}
+	})
+
+	p.Wait()
 	return nil
 }

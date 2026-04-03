@@ -111,9 +111,9 @@ func SendFile(ctx context.Context, fs *fileserver.FileServer, cfg *config.YAMLCo
 	defer transferCancel()
 
 	if opts.AllowRelay {
-		err = fs.StoreFileToPeer(transferCtx, targetPeerID, key)
+		err = fs.StoreFileToPeer(transferCtx, targetPeerID, key, opts.Session)
 	} else {
-		err = fs.StoreFileToPeerDirect(transferCtx, targetPeerID, key)
+		err = fs.StoreFileToPeerDirect(transferCtx, targetPeerID, key, opts.Session)
 	}
 	if err != nil {
 		if err == fileserver.ErrRelayedConnection {

@@ -58,6 +58,10 @@ type FileServer struct {
 	proto           *protocol.Protocol
 	discoveryMgr    *discovery.Manager
 
+	// Session for receive mode
+	sessionLock sync.RWMutex
+	sessionName string
+
 	// Transfer completion waiters
 	waitersLock sync.Mutex
 	waiters     map[string][]chan error
@@ -351,7 +355,7 @@ func (fs *FileServer) handleMessage(peerID peer.ID, msg core.Message) (core.Mess
 
 	switch protoMsg.Type {
 	case protocol.TypeStoreFile:
-		return fs.handleStoreFileMessage(peerID, protoMsg.Key)
+		return fs.handleStoreFileMessage(peerID, protoMsg.Key, protoMsg.Session)
 	case protocol.TypeGetFile:
 		return fs.handleGetFileMessage(peerID, protoMsg.Key)
 	default:
@@ -359,7 +363,7 @@ func (fs *FileServer) handleMessage(peerID peer.ID, msg core.Message) (core.Mess
 	}
 }
 
-func (fs *FileServer) handleStoreFileMessage(peerID peer.ID, key string) (core.Message, error) {
+func (fs *FileServer) handleStoreFileMessage(peerID peer.ID, key, session string) (core.Message, error) {
 	fs.logger.Info("store message received", observability.Fields{
 		"key": key,
 	})
@@ -369,10 +373,26 @@ func (fs *FileServer) handleStoreFileMessage(peerID peer.ID, key string) (core.M
 		return protocol.Message{Type: protocol.TypeStoreFileAck, Data: protocol.DataEmptyKey}, nil
 	}
 
-	// Check if we have the peer registered
-	_, err := fs.getPeer(peerID.String())
-	if err != nil {
-		return protocol.Message{Type: protocol.TypeStoreFileAck, Data: protocol.DataPeerNotFound}, nil
+	// Validate session if one is active
+	fs.sessionLock.RLock()
+	activeSession := fs.sessionName
+	fs.sessionLock.RUnlock()
+
+	if activeSession != "" && session != activeSession {
+		fs.logger.Info("store request rejected: wrong session", observability.Fields{
+			"peer": peerID.String(),
+			"key":  key,
+		})
+		return protocol.Message{Type: protocol.TypeStoreFileAck, Key: key, Data: protocol.DataSessionRejected}, nil
+	}
+
+	// Reject if we already have this file locally
+	if fs.store.Has(key) {
+		fs.logger.Info("store request rejected: file already exists", observability.Fields{
+			"peer": peerID.String(),
+			"key":  key,
+		})
+		return protocol.Message{Type: protocol.TypeStoreFileAck, Key: key, Data: protocol.DataAlreadyExists}, nil
 	}
 
 	fs.logger.Info("ready to receive file transfer", observability.Fields{
@@ -380,8 +400,6 @@ func (fs *FileServer) handleStoreFileMessage(peerID peer.ID, key string) (core.M
 		"key":  key,
 	})
 
-	// Respond with success - the peer should now open a transfer stream
-	// The actual file data will come through the /storage-transfer/1.0.0 protocol
 	return protocol.Message{Type: protocol.TypeStoreFileAck, Key: key, Data: protocol.DataSuccess}, nil
 }
 
@@ -468,9 +486,30 @@ func (fs *FileServer) GetConnectedPeers() int {
 	return len(fs.peers)
 }
 
-// StoreFileToPeer sends a file from local storage to a specific peer
-// The file is decrypted before sending so the peer can re-encrypt with their own key
-func (fs *FileServer) StoreFileToPeer(ctx context.Context, peerID peer.ID, key string) error {
+// StoreFileToPeer sends a file from local storage to a specific peer.
+// It first negotiates via the control protocol (TypeStoreFile) so the receiver
+// can validate the session before the transfer stream is opened.
+func (fs *FileServer) StoreFileToPeer(ctx context.Context, peerID peer.ID, key, session string) error {
+	// Negotiate with the receiver before opening the transfer stream
+	resp, err := fs.proto.Send(ctx, peerID, protocol.Message{
+		Type:    protocol.TypeStoreFile,
+		Key:     key,
+		Session: session,
+	})
+	if err != nil {
+		return fmt.Errorf("failed to negotiate file transfer: %w", err)
+	}
+
+	if resp.Data == protocol.DataSessionRejected {
+		return ErrSessionRejected
+	}
+	if resp.Data == protocol.DataAlreadyExists {
+		return ErrFileAlreadyExists
+	}
+	if resp.Data != protocol.DataSuccess {
+		return fmt.Errorf("peer rejected transfer: %s", resp.Data)
+	}
+
 	// Read decrypted file from local storage
 	r, size, err := fs.store.Read(key)
 	if err != nil {
@@ -483,7 +522,6 @@ func (fs *FileServer) StoreFileToPeer(ctx context.Context, peerID peer.ID, key s
 		"size": size,
 	})
 
-	// Send the file via transfer protocol
 	if err := fs.transferHandler.SendFile(ctx, peerID, key, r, size); err != nil {
 		return fmt.Errorf("failed to transfer file: %w", err)
 	}
@@ -496,16 +534,14 @@ func (fs *FileServer) StoreFileToPeer(ctx context.Context, peerID peer.ID, key s
 	return nil
 }
 
-// StoreFileToNetwork stores a file to multiple peers in the network
-// Reads from local storage using ReadRaw to send encrypted bytes
-// Returns the number of successful stores and any errors
+// StoreFileToNetwork stores a file to multiple peers in the network.
+// Returns the number of successful stores and any errors.
 func (fs *FileServer) StoreFileToNetwork(ctx context.Context, key string, replicationFactor int) (int, error) {
 	peers := fs.ListPeers()
 	if len(peers) == 0 {
 		return 0, fmt.Errorf("no connected peers")
 	}
 
-	// Limit replication factor to available peers
 	if replicationFactor > len(peers) {
 		replicationFactor = len(peers)
 	}
@@ -514,7 +550,7 @@ func (fs *FileServer) StoreFileToNetwork(ctx context.Context, key string, replic
 	var lastErr error
 
 	for i := 0; i < replicationFactor && i < len(peers); i++ {
-		if err := fs.StoreFileToPeer(ctx, peers[i], key); err != nil {
+		if err := fs.StoreFileToPeer(ctx, peers[i], key, ""); err != nil {
 			fs.logger.Error("failed to store file to peer", observability.Fields{
 				"peer":  peers[i].String(),
 				"key":   key,
@@ -683,6 +719,21 @@ func (fs *FileServer) WriteFileTo(key, destPath string) error {
 	return nil
 }
 
+// SetSession enables session-based auth for incoming transfers.
+// Only senders providing this session name will be accepted.
+func (fs *FileServer) SetSession(name string) {
+	fs.sessionLock.Lock()
+	defer fs.sessionLock.Unlock()
+	fs.sessionName = name
+}
+
+// ClearSession disables session validation, accepting all incoming transfers.
+func (fs *FileServer) ClearSession() {
+	fs.sessionLock.Lock()
+	defer fs.sessionLock.Unlock()
+	fs.sessionName = ""
+}
+
 // GetBus returns the internal event bus so callers can subscribe to events.
 func (fs *FileServer) GetBus() *event.Bus {
 	return fs.bus
@@ -704,6 +755,12 @@ func (fs *FileServer) GetNodeAddresses() []string {
 
 // ErrRelayedConnection is returned when only relayed connections exist to a peer
 var ErrRelayedConnection = errors.New("only relayed connection available, direct connection required")
+
+// ErrSessionRejected is returned when the receiver rejects the session name
+var ErrSessionRejected = errors.New("receiver rejected the session name")
+
+// ErrFileAlreadyExists is returned when the receiver already has the file
+var ErrFileAlreadyExists = errors.New("receiver already has this file")
 
 // ConnectToPeer connects to a peer using their multiaddr string
 // Publishes a PeerDiscovered event so the network manager handles the connection
@@ -793,11 +850,11 @@ func (fs *FileServer) WaitForDirectConnection(ctx context.Context, peerID peer.I
 	return ErrRelayedConnection
 }
 
-// StoreFileToPeerDirect sends a file to a peer only if direct connection exists
-// Returns ErrRelayedConnection if only relayed connection is available
-func (fs *FileServer) StoreFileToPeerDirect(ctx context.Context, peerID peer.ID, key string) error {
+// StoreFileToPeerDirect sends a file to a peer only if direct connection exists.
+// Returns ErrRelayedConnection if only relayed connection is available.
+func (fs *FileServer) StoreFileToPeerDirect(ctx context.Context, peerID peer.ID, key, session string) error {
 	if !fs.IsDirectConnection(peerID) {
 		return ErrRelayedConnection
 	}
-	return fs.StoreFileToPeer(ctx, peerID, key)
+	return fs.StoreFileToPeer(ctx, peerID, key, session)
 }
