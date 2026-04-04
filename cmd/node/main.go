@@ -492,6 +492,22 @@ func runReceive(cmd *cobra.Command, args []string) error {
 	defer closeLog()
 	defer fs.Stop()
 
+	// If relay servers are configured, wait for the relay reservation so that
+	// the relay circuit address is available before we print it. Without this,
+	// the user would share a private/local address and hole punching would fail
+	// because the receiver has no relay circuit address to exchange via DCUtR.
+	relayCtx, relayCancel := context.WithTimeout(context.Background(), 30*time.Second)
+	if err := fs.WaitForRelayReservation(relayCtx); err != nil {
+		fmt.Println("Warning: relay reservation not established, only local addresses available")
+	}
+	relayCancel()
+
+	// Reprint addresses now that relay circuit address may be available
+	fmt.Printf("Node ID: %s\n", fs.GetNodeID().String())
+	for _, addr := range fs.GetNodeAddresses() {
+		fmt.Printf("Address: %s\n", addr)
+	}
+
 	fmt.Printf("Session: %s\n", receiveSession)
 	fmt.Println("Waiting for incoming transfers... (Ctrl+C to stop)")
 

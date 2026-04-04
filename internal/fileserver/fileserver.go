@@ -753,7 +753,14 @@ func (fs *FileServer) GetConnectionType(peerID peer.ID) string {
 func (fs *FileServer) WaitForDirectConnection(ctx context.Context, peerID peer.ID, timeout time.Duration) error {
 	deadline := time.Now().Add(timeout)
 	ticker := time.NewTicker(500 * time.Millisecond)
+	logTicker := time.NewTicker(5 * time.Second)
 	defer ticker.Stop()
+	defer logTicker.Stop()
+
+	fs.logger.Info("waiting for hole punch to establish direct connection", observability.Fields{
+		"peer":    peerID.String(),
+		"timeout": timeout.String(),
+	})
 
 	for time.Now().Before(deadline) {
 		if fs.IsDirectConnection(peerID) {
@@ -762,6 +769,16 @@ func (fs *FileServer) WaitForDirectConnection(ctx context.Context, peerID peer.I
 		select {
 		case <-ctx.Done():
 			return ctx.Err()
+		case <-logTicker.C:
+			conns := fs.node.Network().ConnsToPeer(peerID)
+			addrs := make([]string, 0, len(conns))
+			for _, c := range conns {
+				addrs = append(addrs, c.RemoteMultiaddr().String())
+			}
+			fs.logger.Info("still waiting for direct connection, current connections", observability.Fields{
+				"peer":  peerID.String(),
+				"addrs": addrs,
+			})
 		case <-ticker.C:
 			// Check again
 		}

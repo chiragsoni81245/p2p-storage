@@ -47,7 +47,7 @@ node:
 
   # How long to wait for hole punching to establish a direct connection after
   # an initial relay connection is made.
-  hole_punch_wait: 10s
+  hole_punch_wait: 30s
 
   # External IP for cloud instances (EC2, GCP, etc.)
   # When running as a relay server, set this to your public IP

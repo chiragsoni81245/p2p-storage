@@ -39,7 +39,7 @@ func DefaultConfig() Config {
 		EnableAutoNAT:      true,
 		RelayServers:       []string{},
 		EnableRelayService: false,
-		HolePunchWait:      10 * time.Second,
+		HolePunchWait:      30 * time.Second,
 		ExternalIP:           "",
 	}
 }
