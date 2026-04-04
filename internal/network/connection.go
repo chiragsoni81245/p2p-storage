@@ -56,7 +56,8 @@ func (m *Manager) connect(pi peer.AddrInfo) {
 		"addrs":   pi.Addrs,
 	})
 
-	if m.host.Network().Connectedness(pi.ID) == network.Connected {
+	c := m.host.Network().Connectedness(pi.ID)
+	if c == network.Connected || c == network.Limited {
 		m.logger.Info("peer already connected, skipping", observability.Fields{
 			"peer_id": pi.ID.String(),
 		})

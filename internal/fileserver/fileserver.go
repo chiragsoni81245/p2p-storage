@@ -182,8 +182,13 @@ func (fs *FileServer) OnPeerConnect(conn libp2p_network.Conn) {
 	go func() {
 		time.Sleep(500 * time.Millisecond)
 
-		// Verify connection is still established after stabilization period
-		if fs.node == nil || fs.node.Network().Connectedness(peerID) != libp2p_network.Connected {
+		// Verify connection is still established after stabilization period.
+		// Accept Limited (transient/relay) connections as well as full direct ones.
+		if fs.node == nil {
+			return
+		}
+		c := fs.node.Network().Connectedness(peerID)
+		if c != libp2p_network.Connected && c != libp2p_network.Limited {
 			return
 		}
 
@@ -251,9 +256,12 @@ func (fs *FileServer) OnPeerDisconnect(conn libp2p_network.Conn) {
 	fs.peerLock.Lock()
 	defer fs.peerLock.Unlock()
 
-	// Only remove if truly disconnected (no remaining connections)
-	if fs.node != nil && fs.node.Network().Connectedness(peerID) == libp2p_network.Connected {
-		return
+	// Only remove if truly disconnected (no remaining connections, direct or relay).
+	if fs.node != nil {
+		c := fs.node.Network().Connectedness(peerID)
+		if c == libp2p_network.Connected || c == libp2p_network.Limited {
+			return
+		}
 	}
 
 	if _, exists := fs.peers[peerID.String()]; !exists {
@@ -706,7 +714,9 @@ func (fs *FileServer) ConnectToPeer(ctx context.Context, multiaddr string) (peer
 		case <-ctx.Done():
 			return "", fmt.Errorf("timeout waiting for connection: %w", ctx.Err())
 		case <-ticker.C:
-			if fs.node.Network().Connectedness(peerInfo.ID) == libp2p_network.Connected {
+			c := fs.node.Network().Connectedness(peerInfo.ID)
+			// network.Limited = transient/relay connection (go-libp2p v0.29+)
+			if c == libp2p_network.Connected || c == libp2p_network.Limited {
 				fs.logger.Info("connected to peer", observability.Fields{
 					"peer": peerInfo.ID.String(),
 				})
