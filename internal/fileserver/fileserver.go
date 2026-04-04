@@ -732,8 +732,8 @@ func (fs *FileServer) IsDirectConnection(peerID peer.ID) bool {
 	conns := fs.node.Network().ConnsToPeer(peerID)
 	for _, conn := range conns {
 		addr := conn.RemoteMultiaddr().String()
-		// Relayed connections contain "/p2p-circuit/" in the multiaddr
-		if !strings.Contains(addr, "/p2p-circuit/") {
+		// Relayed connections contain "/p2p-circuit" in the multiaddr
+		if !strings.Contains(addr, "/p2p-circuit") {
 			return true
 		}
 	}
@@ -788,7 +788,7 @@ func (fs *FileServer) WaitForRelayReservation(ctx context.Context) error {
 			return ctx.Err()
 		case <-ticker.C:
 			for _, addr := range fs.GetNodeAddresses() {
-				if strings.Contains(addr, "/p2p-circuit/") {
+				if strings.Contains(addr, "/p2p-circuit") {
 					return nil
 				}
 			}
@@ -823,12 +823,12 @@ type ConnectOpts struct {
 // Each connection step is bounded by GetConnectTimeout; the outer ctx provides
 // an additional cancellation boundary.
 func (fs *FileServer) ConnectWithHolePunch(ctx context.Context, peerAddr string, opts ConnectOpts) (peer.ID, error) {
-	if !strings.Contains(peerAddr, "/p2p-circuit/") {
+	if !strings.Contains(peerAddr, "/p2p-circuit") {
 		return fs.ConnectToPeer(ctx, peerAddr)
 	}
 
 	// --- Relay circuit address ---
-	relayPart := strings.Split(peerAddr, "/p2p-circuit/")[0]
+	relayPart := strings.Split(peerAddr, "/p2p-circuit")[0]
 
 	// 1. Connect to the relay
 	relayCtx, relayCancel := context.WithTimeout(ctx, GetConnectTimeout)
@@ -870,11 +870,19 @@ reservationLoop:
 		return "", fmt.Errorf("failed to connect to peer through relay: %w", err)
 	}
 
-	// 4. Attempt hole punching if requested — best-effort, does not fail the call
+	// 4. Wait for hole punching to produce a direct connection.
+	// DCUtR fires automatically in the background once the relay connection is up;
+	// we just poll until a direct connection appears or the wait expires.
 	if opts.HolePunchWait > 0 {
 		hpCtx, hpCancel := context.WithTimeout(ctx, opts.HolePunchWait)
-		_ = fs.WaitForDirectConnection(hpCtx, peerID, opts.HolePunchWait)
+		err = fs.WaitForDirectConnection(hpCtx, peerID, opts.HolePunchWait)
 		hpCancel()
+		if err != nil {
+			return "", fmt.Errorf("hole punching failed after %s: %w", opts.HolePunchWait, ErrRelayedConnection)
+		}
+		fs.logger.Info("hole punching succeeded, direct connection established", observability.Fields{
+			"peer": peerID.String(),
+		})
 	}
 
 	return peerID, nil

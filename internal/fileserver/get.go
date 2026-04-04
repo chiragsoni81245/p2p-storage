@@ -106,12 +106,8 @@ func (fs *FileServer) deliverToRequester(payload protocol.GetFilePayload) {
 	}
 
 	// Transfer: no deadline — let the stream run to completion.
-	// Respect AllowRelayedTransfer: if false, abort if only a relayed connection is available.
-	if fs.Config.NodeConfig.AllowRelayedTransfer {
-		err = fs.StoreFileToPeer(context.Background(), requesterID, payload.Key, "")
-	} else {
-		err = fs.StoreFileToPeerDirect(context.Background(), requesterID, payload.Key, "")
-	}
+	// Always require a direct connection; relay transfers are not allowed.
+	err = fs.StoreFileToPeerDirect(context.Background(), requesterID, payload.Key, "")
 	if err != nil && err != ErrFileAlreadyExists {
 		fs.logger.Error("failed to deliver file to requester", observability.Fields{
 			"requester_id": payload.RequesterID,

@@ -84,13 +84,13 @@ p2p-storage send --session mysession ./myfile.txt /ip4/192.168.1.10/tcp/4001/p2p
 
 Sends a file directly to a specific peer. The file is stored locally first, then transferred.
 
-For relay circuit addresses (`/p2p-circuit/`), the sender:
+For relay circuit addresses (`/p2p-circuit`), the sender:
 1. Connects to the relay
 2. Waits for its own relay reservation so it is reachable back
 3. Connects to the target peer through the relay
 4. Attempts hole punching to upgrade to a direct connection
 
-By default, only direct connections are used for the transfer. If hole punching fails and a direct connection cannot be established, the transfer is rejected. Set `allow_relayed_transfer: true` in your config to permit transfers over relay when hole punching fails.
+Only direct connections are used for the transfer. If hole punching fails and a direct connection cannot be established, the transfer is rejected with a clear error.
 
 If the receiver is running `receive --session <name>`, supply the matching name via `--session` or the transfer will be rejected. If the receiver already has the file it will also be rejected.
 
@@ -162,7 +162,7 @@ When peers are behind NAT, direct connections require additional setup. The node
 
 **Hole punching (DCUtR)** — After connecting through a relay, both peers simultaneously attempt a direct connection. This succeeds in most NAT configurations. Enabled by default (`enable_hole_punch: true`). The wait time is controlled by `hole_punch_wait` (default `10s`).
 
-**Relay fallback** — If hole punching fails, the transfer can optionally proceed over the relay connection. This is disabled by default (`allow_relayed_transfer: false`) to keep transfers direct and secure. Enable it only if your peers are behind strict NAT and hole punching never succeeds.
+Transfers always require a direct connection — relay connections are only used as a signalling channel for hole punching, never for data transfer.
 
 To use relay-based NAT traversal, add relay server addresses to your config:
 
@@ -173,7 +173,6 @@ node:
   enable_relay: true
   enable_hole_punch: true
   hole_punch_wait: 10s
-  allow_relayed_transfer: false  # set true only if hole punching never works
 ```
 
 ## Peer Discovery
@@ -234,7 +233,6 @@ Key defaults:
 | `node.enable_relay` | true | Enable relay client for NAT traversal |
 | `node.enable_hole_punch` | true | Enable hole punching (DCUtR) |
 | `node.hole_punch_wait` | `10s` | Time to wait for hole punching |
-| `node.allow_relayed_transfer` | false | Allow transfers over relay if hole punching fails |
 | `encryption.enabled` | true | Enable AES-256 encryption at rest |
 | `encryption.key_path` | `./encryption.key` | Path to encryption key |
 

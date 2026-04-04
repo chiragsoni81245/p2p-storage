@@ -53,14 +53,10 @@ func SendFile(ctx context.Context, fs *fileserver.FileServer, cfg *config.YAMLCo
 	transferCtx, transferCancel := context.WithTimeout(ctx, cfg.Timeout)
 	defer transferCancel()
 
-	if cfg.Node.AllowRelayedTransfer {
-		err = fs.StoreFileToPeer(transferCtx, targetPeerID, key, opts.Session)
-	} else {
-		err = fs.StoreFileToPeerDirect(transferCtx, targetPeerID, key, opts.Session)
-	}
+	err = fs.StoreFileToPeerDirect(transferCtx, targetPeerID, key, opts.Session)
 	if err != nil {
 		if err == fileserver.ErrRelayedConnection {
-			return nil, fmt.Errorf("connection became relayed during transfer - aborting for security")
+			return nil, fmt.Errorf("hole punching failed: no direct connection to peer (only relay available)")
 		}
 		return nil, fmt.Errorf("failed to send file: %w", err)
 	}

@@ -64,7 +64,6 @@ type YAMLNodeConfig struct {
 	EnableAutoNAT        bool          `yaml:"enable_auto_nat"`
 	RelayServers         []string      `yaml:"relay_servers"`
 	EnableRelayService   bool          `yaml:"enable_relay_service"`
-	AllowRelayedTransfer bool          `yaml:"allow_relayed_transfer"`
 	HolePunchWait        time.Duration `yaml:"hole_punch_wait"`
 
 	// Address announcement (for relay servers on EC2/cloud)
@@ -233,9 +232,8 @@ func DefaultYAMLConfig() *YAMLConfig {
 			EnableHolePunch:    nodeCfg.EnableHolePunch,
 			EnableAutoNAT:      nodeCfg.EnableAutoNAT,
 			RelayServers:       nodeCfg.RelayServers,
-			EnableRelayService:   nodeCfg.EnableRelayService,
-			AllowRelayedTransfer: nodeCfg.AllowRelayedTransfer,
-			HolePunchWait:        nodeCfg.HolePunchWait,
+			EnableRelayService: nodeCfg.EnableRelayService,
+			HolePunchWait:      nodeCfg.HolePunchWait,
 			ExternalIP:           nodeCfg.ExternalIP,
 			Discovery: YAMLDiscoveryConfig{
 				EnabledMethods: []string{"mdns"},
@@ -300,7 +298,6 @@ func (y *YAMLConfig) ToNodeConfig() node.Config {
 	cfg.EnableAutoNAT = y.Node.EnableAutoNAT
 	cfg.RelayServers = y.Node.RelayServers
 	cfg.EnableRelayService = y.Node.EnableRelayService
-	cfg.AllowRelayedTransfer = y.Node.AllowRelayedTransfer
 	if y.Node.HolePunchWait != 0 {
 		cfg.HolePunchWait = y.Node.HolePunchWait
 	}

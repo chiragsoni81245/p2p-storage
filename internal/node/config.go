@@ -20,7 +20,6 @@ type Config struct {
 	EnableAutoNAT      bool          // Enable AutoNAT to detect NAT status
 	RelayServers       []string      // Static relay server multiaddrs (your EC2 server)
 	EnableRelayService bool          // Run as relay server (for your EC2 instance)
-	AllowRelayedTransfer bool        // Allow file transfers over relay (default: false, direct only)
 	HolePunchWait      time.Duration // How long to wait for hole punching (default: 10s)
 
 	// Address announcement (for relay servers on EC2/cloud)
@@ -35,13 +34,12 @@ func DefaultConfig() Config {
 		MaxConnection:        100,
 		Concurrency:          10,
 		DiscoveryConfig:      discovery.DefaultConfig(),
-		EnableRelay:          true,
-		EnableHolePunch:      true,
-		EnableAutoNAT:        true,
-		RelayServers:         []string{},
-		EnableRelayService:   false,
-		AllowRelayedTransfer: false,
-		HolePunchWait:        10 * time.Second,
+		EnableRelay:        true,
+		EnableHolePunch:    true,
+		EnableAutoNAT:      true,
+		RelayServers:       []string{},
+		EnableRelayService: false,
+		HolePunchWait:      10 * time.Second,
 		ExternalIP:           "",
 	}
 }
