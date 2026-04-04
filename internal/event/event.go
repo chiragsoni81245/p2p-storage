@@ -14,46 +14,22 @@ const (
 	StoragePeerUnregistered EventType = "peer:storage:unregistered" // Storage peer disconnected
 	FileTransferComplete    EventType = "file:transfer:complete"
 
-	// Get operation events
-	FileGetStarted  EventType = "file:get:started"
-	FileGetProgress EventType = "file:get:progress"
-	FileGetComplete EventType = "file:get:complete"
-	FileGetFailed   EventType = "file:get:failed"
-
 	// Receive session events
 	FileReceiveStarted  EventType = "file:receive:started"
 	FileReceiveProgress EventType = "file:receive:progress"
 	FileReceiveComplete EventType = "file:receive:complete"
 	FileReceiveFailed   EventType = "file:receive:failed"
+
+	// Get (hop) events
+	GetReceived   EventType = "get:received"   // relaying: don't have file, forwarding
+	GetDelivering EventType = "get:delivering" // have file, connecting back to requester
+	GetDelivered  EventType = "get:delivered"  // delivery complete
 )
 
 type Event struct {
 	Type      EventType
 	RequestID string
 	Data      any
-}
-
-// GetStartedData is published when a get operation begins
-type GetStartedData struct {
-	Key string
-}
-
-// GetProgressData is published periodically during a get operation
-type GetProgressData struct {
-	Key           string
-	BytesReceived int64
-	TotalBytes    int64
-}
-
-// GetCompleteData is published when a file is successfully retrieved into local storage
-type GetCompleteData struct {
-	Key string
-}
-
-// GetFailedData is published when a get operation fails
-type GetFailedData struct {
-	Key string
-	Err error
 }
 
 // ReceiveStartedData is published when an incoming file transfer begins
@@ -80,6 +56,26 @@ type ReceiveCompleteData struct {
 type ReceiveFailedData struct {
 	Key string
 	Err error
+}
+
+// GetReceivedData is published when this node receives a get request it doesn't have and forwards it
+type GetReceivedData struct {
+	MsgID string
+	Key   string
+	TTL   int
+}
+
+// GetDeliveringData is published when this node has the file and is connecting back to the requester
+type GetDeliveringData struct {
+	MsgID       string
+	Key         string
+	RequesterID string
+}
+
+// GetDeliveredData is published when delivery to the requester completed successfully
+type GetDeliveredData struct {
+	MsgID string
+	Key   string
 }
 
 type Bus struct {

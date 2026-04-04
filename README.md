@@ -9,8 +9,10 @@ Files are content-addressed using SHA256 hashes and stored locally with AES-256 
 - Content-addressed storage using SHA256 hashes
 - AES-256 encryption at rest with streaming encryption
 - Multiple discovery methods: mDNS (local), DHT (distributed), and bootstrap peers
+- Hop-get: broadcast file requests propagate through the network; any node that has the file connects back and delivers it directly
 - Direct peer-to-peer file transfer with NAT hole punching and relay fallback
 - Session-based receive mode: only accept transfers from senders with the correct session name
+- Daemon mode: run a propagation-only node that relays get requests and delivers files it holds
 - Connection management with configurable limits
 - Rate limiting and backpressure to protect nodes from overload
 - Event-driven architecture with a pub/sub bus
@@ -50,7 +52,7 @@ p2p-storage get abc123...def ./output.txt
 p2p-storage get abc123...def
 ```
 
-Checks local storage first. If the file is not found locally, requests it from connected peers and saves it to local storage, then writes it to the output path.
+Checks local storage first. If the file is not found locally, broadcasts a `GET_FILE` request into the network. Any peer that holds the file will connect back and deliver it directly. The command waits until delivery completes or the timeout expires.
 
 ### Get file key
 
@@ -81,6 +83,23 @@ p2p-storage send --allow-relay ./myfile.txt /ip4/3.90.43.169/tcp/4001/p2p/12D3Ko
 Sends a file directly to a specific peer. The file is stored locally first, then transferred. By default only a direct connection is used; if both peers are behind NAT, hole punching is attempted. Use `--allow-relay` to permit transfer over a relayed connection.
 
 If the receiver is running with `--session`, supply the matching name via `--session` or the transfer will be rejected before the stream opens. If the receiver already has the file it will also be rejected.
+
+### Run a propagation node (daemon)
+
+```bash
+p2p-storage daemon
+```
+
+Starts a node that participates in file discovery and propagation without initiating any transfers. It forwards `GET_FILE` requests to peers and delivers files it holds locally. Useful as an always-on relay or cache node. Press Ctrl+C to stop.
+
+```
+Node ID: 12D3KooW...
+Address: /ip4/192.168.1.10/tcp/52341/p2p/12D3KooW...
+Daemon running. Ctrl+C to stop.
+[relay]    key=abc123def456... msgID=f3a1... ttl=2
+[deliver]  key=abc123def456... requester=12D3KooW...
+[done]     key=abc123def456... msgID=f3a1...
+```
 
 ### Receive files from peers
 
