@@ -36,6 +36,8 @@ jobs:
           GOOS=linux GOARCH=amd64 go build -o bin/p2p-storage-linux-amd64 ./cmd/node/main.go
           # Build for Windows
           GOOS=windows GOARCH=amd64 go build -o bin/p2p-storage-windows-amd64.exe ./cmd/node/main.go
+          # Build for Mac
+          GOOS=darwin GOARCH=arm64 go build -o bin/p2p-storage-darwin-arm64 ./cmd/node/main.go
 
       - name: Verify build
         run: |
@@ -55,6 +57,7 @@ jobs:
           name: ${{ github.event.inputs.version }}
           files: |
             bin/p2p-storage-linux-amd64
+            bin/p2p-storage-darwin-arm64
             bin/p2p-storage-windows-amd64.exe
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
