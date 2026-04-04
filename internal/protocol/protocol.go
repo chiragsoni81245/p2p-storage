@@ -88,6 +88,11 @@ func (p *Protocol) handleStream(s network.Stream) {
 		return
 	}
 
+	// nil response means fire-and-forget — skip writing a response
+	if resp == nil {
+		return
+	}
+
 	// Set write deadline
 	_ = s.SetWriteDeadline(time.Now().Add(p.cfg.WriteTimeout))
 
@@ -98,6 +103,28 @@ func (p *Protocol) handleStream(s network.Stream) {
 		})
 		return
 	}
+}
+
+// SendOneWay opens a stream, writes msg, and returns without reading a response.
+// Use for fire-and-forget messages where the receiver handles the message asynchronously.
+func (p *Protocol) SendOneWay(ctx context.Context, peerID peer.ID, msg Message) error {
+	ctx, cancel := context.WithTimeout(ctx, p.cfg.HandlerTimeout)
+	defer cancel()
+
+	stream, err := p.host.NewStream(ctx, peerID, p.id)
+	if err != nil {
+		return err
+	}
+	defer stream.Close()
+
+	_ = stream.SetWriteDeadline(time.Now().Add(p.cfg.WriteTimeout))
+
+	encoder := json.NewEncoder(stream)
+	if err := encoder.Encode(msg); err != nil {
+		return err
+	}
+
+	return nil
 }
 
 func (p *Protocol) Send(ctx context.Context, peerID peer.ID, msg Message) (Message, error) {

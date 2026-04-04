@@ -58,12 +58,16 @@ type FileServer struct {
 	proto           *protocol.Protocol
 	discoveryMgr    *discovery.Manager
 
+	// Get (hop) state
+	seen     *SeenMessages
+	selector PeerSelector
+
 	// Session for receive mode
 	sessionLock sync.RWMutex
 	sessionName string
 
 	// Transfer completion waiters
-	waitersLock sync.Mutex
+	waitersLock sync.RWMutex
 	waiters     map[string][]chan error
 }
 
@@ -114,6 +118,8 @@ func NewFileServer(opts FileServerOpts) (*FileServer, error) {
 		bus:            bus,
 		scorer:         scorer,
 		waiters:        make(map[string][]chan error),
+		seen:           NewSeenMessages(10000, 60*time.Second),
+		selector:       &RandomPeerSelector{},
 	}, nil
 }
 
@@ -129,7 +135,13 @@ func (fs *FileServer) getPeer(id string) (Peer, error) {
 	return peer, nil
 }
 
-// registerTransferWaiter registers a channel to be notified when a file transfer completes
+// RegisterTransferWaiter registers a channel to be notified when a file transfer completes.
+// It is exported so operations.Get can pre-register before broadcasting.
+func (fs *FileServer) RegisterTransferWaiter(key string) chan error {
+	return fs.registerTransferWaiter(key)
+}
+
+// registerTransferWaiter is the internal implementation.
 func (fs *FileServer) registerTransferWaiter(key string) chan error {
 	fs.waitersLock.Lock()
 	defer fs.waitersLock.Unlock()
@@ -350,40 +362,55 @@ func (fs *FileServer) Stop() {
 func (fs *FileServer) handleMessage(peerID peer.ID, msg core.Message) (core.Message, error) {
 	protoMsg, ok := msg.(protocol.Message)
 	if !ok {
-		return protocol.Message{Type: protocol.TypeError, Data: protocol.DataInvalidMsg}, nil
+		return protocol.NewMessage(protocol.TypeError, protocol.ErrorPayload{Reason: protocol.StatusInvalidMsg}), nil
 	}
 
 	switch protoMsg.Type {
 	case protocol.TypeStoreFile:
-		return fs.handleStoreFileMessage(peerID, protoMsg.Key, protoMsg.Session)
+		return fs.handleStoreFileMessage(peerID, protoMsg)
 	case protocol.TypeGetFile:
-		return fs.handleGetFileMessage(peerID, protoMsg.Key)
+		fs.handleGet(peerID, protoMsg)
+		return nil, nil // fire-and-forget: handleStream skips writing response
 	default:
-		return protocol.Message{Type: protocol.TypeError, Data: protocol.DataUnknownType}, nil
+		return protocol.NewMessage(protocol.TypeError, protocol.ErrorPayload{Reason: protocol.StatusUnknownType}), nil
 	}
 }
 
-func (fs *FileServer) handleStoreFileMessage(peerID peer.ID, key, session string) (core.Message, error) {
+func (fs *FileServer) handleStoreFileMessage(peerID peer.ID, msg protocol.Message) (core.Message, error) {
+	payload, err := protocol.Decode[protocol.StoreFilePayload](msg)
+	if err != nil {
+		return protocol.NewMessage(protocol.TypeError, protocol.ErrorPayload{Reason: protocol.StatusInvalidMsg}), nil
+	}
+	key := payload.Key
+	session := payload.Session
+
 	fs.logger.Info("store message received", observability.Fields{
 		"key": key,
 	})
 
 	// Validate the request
 	if key == "" {
-		return protocol.Message{Type: protocol.TypeStoreFileAck, Data: protocol.DataEmptyKey}, nil
+		return protocol.NewMessage(protocol.TypeStoreFileResp, protocol.StoreFileRespPayload{Status: protocol.StatusEmptyKey}), nil
 	}
 
-	// Validate session if one is active
-	fs.sessionLock.RLock()
-	activeSession := fs.sessionName
-	fs.sessionLock.RUnlock()
+	// Check if we are waiting for this file or we have an active receive session which match with user request
+	fs.waitersLock.RLock()
+	_, waitingForKey := fs.waiters[key]
+	fs.waitersLock.RUnlock()
 
-	if activeSession != "" && session != activeSession {
-		fs.logger.Info("store request rejected: wrong session", observability.Fields{
-			"peer": peerID.String(),
-			"key":  key,
-		})
-		return protocol.Message{Type: protocol.TypeStoreFileAck, Key: key, Data: protocol.DataSessionRejected}, nil
+	if !waitingForKey {
+		// Validate session if one is active
+		fs.sessionLock.RLock()
+		activeSession := fs.sessionName
+		fs.sessionLock.RUnlock()
+
+		if activeSession != "" && session != activeSession {
+			fs.logger.Info("store request rejected: wrong session", observability.Fields{
+				"peer": peerID.String(),
+				"key":  key,
+			})
+			return protocol.NewMessage(protocol.TypeStoreFileResp, protocol.StoreFileRespPayload{Key: key, Status: protocol.StatusSessionRejected}), nil
+		}
 	}
 
 	// Reject if we already have this file locally
@@ -392,7 +419,7 @@ func (fs *FileServer) handleStoreFileMessage(peerID peer.ID, key, session string
 			"peer": peerID.String(),
 			"key":  key,
 		})
-		return protocol.Message{Type: protocol.TypeStoreFileAck, Key: key, Data: protocol.DataAlreadyExists}, nil
+		return protocol.NewMessage(protocol.TypeStoreFileResp, protocol.StoreFileRespPayload{Key: key, Status: protocol.StatusAlreadyExists}), nil
 	}
 
 	fs.logger.Info("ready to receive file transfer", observability.Fields{
@@ -400,67 +427,19 @@ func (fs *FileServer) handleStoreFileMessage(peerID peer.ID, key, session string
 		"key":  key,
 	})
 
-	return protocol.Message{Type: protocol.TypeStoreFileAck, Key: key, Data: protocol.DataSuccess}, nil
+	return protocol.NewMessage(protocol.TypeStoreFileResp, protocol.StoreFileRespPayload{Key: key, Status: protocol.StatusSuccess}), nil
 }
 
-func (fs *FileServer) handleGetFileMessage(peerID peer.ID, key string) (core.Message, error) {
-	fs.logger.Info("get message received", observability.Fields{
-		"key": key,
-	})
-
-	// Validate the request
-	if key == "" {
-		return protocol.Message{Type: protocol.TypeGetFileResp, Data: protocol.DataEmptyKey}, nil
-	}
-
-	// Check if file exists
-	if !fs.store.Has(key) {
-		fs.logger.Info("file requested via peer not found", observability.Fields{
-			"peer": peerID.String(),
-			"key":  key,
-		})
-		return protocol.Message{Type: protocol.TypeGetFileResp, Key: key, Data: protocol.DataNotFound}, nil
-	}
-
-	// Read decrypted file from store for network transfer
-	// Peer will re-encrypt with their own key when storing
-	r, size, err := fs.store.Read(key)
+func (fs *FileServer) handleGet(peerID peer.ID, msg protocol.Message) {
+	payload, err := protocol.Decode[protocol.GetFilePayload](msg)
 	if err != nil {
-		fs.logger.Error("failed to read file from store", observability.Fields{
+		fs.logger.Error("failed to decode GET_FILE payload", observability.Fields{
 			"error": err.Error(),
-			"key":   key,
 		})
-		return protocol.Message{Type: protocol.TypeGetFileResp, Key: key, Data: protocol.DataReadFailed}, nil
+		return
 	}
 
-	// Check if peer is registered
-	_, err = fs.getPeer(peerID.String())
-	if err != nil {
-		return protocol.Message{Type: protocol.TypeGetFileResp, Key: key, Data: protocol.DataPeerNotFound}, nil
-	}
-
-	fs.logger.Info("sending file to peer", observability.Fields{
-		"peer": peerID.String(),
-		"key":  key,
-		"size": size,
-	})
-
-	// Send file via a new stream in a goroutine
-	// The response tells the peer we have the file and will send it
-	go func() {
-		ctx, cancel := context.WithTimeout(context.Background(), TransferTimeout)
-		defer cancel()
-
-		if err := fs.transferHandler.SendFile(ctx, peerID, key, r, size); err != nil {
-			fs.logger.Error("failed to send file to peer", observability.Fields{
-				"error": err.Error(),
-				"peer":  peerID.String(),
-				"key":   key,
-			})
-		}
-	}()
-
-	return protocol.Message{Type: protocol.TypeGetFileResp, Key: key, Data: protocol.DataFound}, nil
+	go fs.processGet(peerID, payload)
 }
 
 // ============================================================================
@@ -491,23 +470,28 @@ func (fs *FileServer) GetConnectedPeers() int {
 // can validate the session before the transfer stream is opened.
 func (fs *FileServer) StoreFileToPeer(ctx context.Context, peerID peer.ID, key, session string) error {
 	// Negotiate with the receiver before opening the transfer stream
-	resp, err := fs.proto.Send(ctx, peerID, protocol.Message{
-		Type:    protocol.TypeStoreFile,
+	resp, err := fs.proto.Send(ctx, peerID, protocol.NewMessage(protocol.TypeStoreFile, protocol.StoreFilePayload{
 		Key:     key,
 		Session: session,
-	})
+	}))
 	if err != nil {
 		return fmt.Errorf("failed to negotiate file transfer: %w", err)
 	}
 
-	if resp.Data == protocol.DataSessionRejected {
+	ack, err := protocol.Decode[protocol.StoreFileRespPayload](resp)
+	if err != nil {
+		return fmt.Errorf("failed to decode store response: %w", err)
+	}
+
+	switch ack.Status {
+	case protocol.StatusSessionRejected:
 		return ErrSessionRejected
-	}
-	if resp.Data == protocol.DataAlreadyExists {
+	case protocol.StatusAlreadyExists:
 		return ErrFileAlreadyExists
-	}
-	if resp.Data != protocol.DataSuccess {
-		return fmt.Errorf("peer rejected transfer: %s", resp.Data)
+	case protocol.StatusSuccess:
+		// ok
+	default:
+		return fmt.Errorf("peer rejected transfer: %s", ack.Status)
 	}
 
 	// Read decrypted file from local storage
@@ -602,97 +586,26 @@ func (fs *FileServer) StoreFile(ctx context.Context, key string, filePath string
 	return fs.StoreFileToNetwork(ctx, key, replicationFactor)
 }
 
-// GetFileFromPeer requests a file from a specific peer and stores it locally.
-// The peer will open a transfer stream back to us with the file data.
-func (fs *FileServer) GetFileFromPeer(ctx context.Context, peerID peer.ID, key string) error {
-	fs.logger.Info("requesting file from peer", observability.Fields{
-		"peer": peerID.String(),
-		"key":  key,
-	})
-
-	// Register a waiter before sending the request to avoid race conditions
-	waiter := fs.registerTransferWaiter(key)
-
-	// Send get file request via the messaging protocol
-	resp, err := fs.proto.Send(ctx, peerID, protocol.Message{
-		Type: protocol.TypeGetFile,
-		Key:  key,
-	})
-	if err != nil {
-		fs.notifyTransferComplete(key, err) // Clean up waiter
-		return fmt.Errorf("failed to send get request: %w", err)
-	}
-
-	fs.logger.Info("received get file response", observability.Fields{
-		"response": resp,
-	})
-
-	// Check if the peer has the file
-	if resp.Data == protocol.DataNotFound {
-		fs.notifyTransferComplete(key, fmt.Errorf("file not found"))
-		return fmt.Errorf("peer does not have the file: %s", key)
-	}
-
-	if resp.Data != protocol.DataFound {
-		fs.notifyTransferComplete(key, fmt.Errorf("unexpected response: %s", resp.Data))
-		return fmt.Errorf("unexpected response from peer: %s", resp.Data)
-	}
-
-	// Wait for the transfer to complete with timeout
-	select {
-	case err := <-waiter:
-		if err != nil {
-			return fmt.Errorf("file transfer failed: %w", err)
-		}
-	case <-ctx.Done():
-		return fmt.Errorf("context cancelled while waiting for file transfer: %w", ctx.Err())
-	}
-
-	// Verify we received the file
-	if !fs.store.Has(key) {
-		return fmt.Errorf("file transfer completed but file not found in store")
-	}
-
-	return nil
-}
-
-// GetFileFromNetwork tries to get a file from any peer that has it and stores it locally.
-func (fs *FileServer) GetFileFromNetwork(ctx context.Context, key string) error {
-	peers := fs.ListPeers()
-	if len(peers) == 0 {
-		return fmt.Errorf("no connected peers")
-	}
-
-	// Try each peer until we get the file
-	for _, p := range peers {
-		if err := fs.GetFileFromPeer(ctx, p, key); err != nil {
-			fs.logger.Info("peer did not have file, trying next", observability.Fields{
-				"peer":  p.String(),
-				"key":   key,
-				"error": err.Error(),
-			})
-			continue
-		}
-		return nil
-	}
-
-	return fmt.Errorf("file not found on any peer")
-}
-
 // HasFile checks if a file exists locally
 func (fs *FileServer) HasFile(key string) bool {
 	return fs.store.Has(key)
 }
 
-// GetFile ensures a file is in local storage, fetching from the network if needed.
-func (fs *FileServer) GetFile(ctx context.Context, key string) error {
-	if fs.store.Has(key) {
-		fs.logger.Info("file found locally", observability.Fields{"key": key})
-		return nil
+// BroadcastGet sends a GET_FILE message to all connected peers.
+func (fs *FileServer) BroadcastGet(ctx context.Context, payload protocol.GetFilePayload) {
+	msg := protocol.NewMessage(protocol.TypeGetFile, payload)
+	for _, p := range fs.ListPeers() {
+		p := p
+		go func() {
+			if err := fs.proto.SendOneWay(ctx, p, msg); err != nil {
+				fs.logger.Debug("failed to send GET_FILE to peer", observability.Fields{
+					"peer":  p.String(),
+					"key":   payload.Key,
+					"error": err.Error(),
+				})
+			}
+		}()
 	}
-
-	fs.logger.Info("file not found locally, trying network", observability.Fields{"key": key})
-	return fs.GetFileFromNetwork(ctx, key)
 }
 
 // WriteFileTo copies a locally stored file to destPath.

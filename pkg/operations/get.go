@@ -3,99 +3,61 @@ package operations
 import (
 	"context"
 	"fmt"
-	"time"
 
-	"github.com/chiragsoni81245/p2p-storage/internal/config"
 	"github.com/chiragsoni81245/p2p-storage/internal/event"
 	"github.com/chiragsoni81245/p2p-storage/internal/fileserver"
+	"github.com/chiragsoni81245/p2p-storage/internal/protocol"
+	"github.com/google/uuid"
 )
 
-// GetFile fetches a file by key into local storage.
-// The operation runs in the background; progress and completion are published
-// to bus under the given requestID. The caller should subscribe to
-// event.FileGetStarted, event.FileGetComplete, and event.FileGetFailed
-// before calling this function.
-func GetFile(fs *fileserver.FileServer, cfg *config.YAMLConfig, key string, requestID RequestID, bus *event.Bus) {
-	go func() {
-		bus.Publish(event.Event{
-			Type:      event.FileGetStarted,
-			RequestID: requestID,
-			Data:      event.GetStartedData{Key: key},
-		})
+// Get broadcasts a GET_FILE request into the network.
+// It registers a transfer waiter so the delivery will be accepted without a session.
+// Follow with WaitForGet to block until the file arrives.
+func Get(ctx context.Context, fs *fileserver.FileServer, key string, bus *event.Bus) {
+	// Register waiter before broadcasting so we don't miss the incoming transfer
+	fs.RegisterTransferWaiter(key)
 
-		ctx, cancel := context.WithTimeout(context.Background(), cfg.Timeout)
-		defer cancel()
+	payload := protocol.GetFilePayload{
+		Key:            key,
+		MsgID:          uuid.New().String(),
+		TTL:            fileserver.DefaultTTL,
+		RequesterID:    fs.GetNodeID().String(),
+		RequesterAddrs: fs.GetNodeAddresses(),
+	}
 
-		if !fs.HasFile(key) {
-			peerCount := WaitForPeers(fs, cfg.PeerWait)
-			if peerCount == 0 {
-				bus.Publish(event.Event{
-					Type:      event.FileGetFailed,
-					RequestID: requestID,
-					Data: event.GetFailedData{
-						Key: key,
-						Err: fmt.Errorf("no peers available and file not found locally"),
-					},
-				})
-				return
-			}
-
-			bus.Publish(event.Event{
-				Type:      event.FileGetProgress,
-				RequestID: requestID,
-				Data: event.GetProgressData{
-					Key:           key,
-					BytesReceived: 0,
-					TotalBytes:    -1,
-				},
-			})
-		}
-
-		if err := fs.GetFile(ctx, key); err != nil {
-			bus.Publish(event.Event{
-				Type:      event.FileGetFailed,
-				RequestID: requestID,
-				Data:      event.GetFailedData{Key: key, Err: err},
-			})
-			return
-		}
-
-		bus.Publish(event.Event{
-			Type:      event.FileGetComplete,
-			RequestID: requestID,
-			Data:      event.GetCompleteData{Key: key},
-		})
-	}()
+	fs.BroadcastGet(ctx, payload)
 }
 
-// WaitForGet blocks until the get operation identified by requestID completes
-// or fails, or until ctx is cancelled. Returns the file key on success.
-func WaitForGet(ctx context.Context, bus *event.Bus, requestID RequestID) (string, error) {
-	completeCh := bus.Subscribe(event.FileGetComplete)
-	failedCh := bus.Subscribe(event.FileGetFailed)
-	defer bus.Unsubscribe(event.FileGetComplete, completeCh)
-	defer bus.Unsubscribe(event.FileGetFailed, failedCh)
-
-	timeout := time.After(24 * time.Hour)
+// WaitForGet blocks until an incoming transfer for key completes (FileReceiveComplete),
+// or until ctx expires. Returns the key on success.
+func WaitForGet(ctx context.Context, bus *event.Bus, key string) (string, error) {
+	completeCh := bus.Subscribe(event.FileReceiveComplete)
+	failedCh := bus.Subscribe(event.FileReceiveFailed)
+	defer bus.Unsubscribe(event.FileReceiveComplete, completeCh)
+	defer bus.Unsubscribe(event.FileReceiveFailed, failedCh)
 
 	for {
 		select {
 		case <-ctx.Done():
-			return "", ctx.Err()
-		case <-timeout:
-			return "", fmt.Errorf("timed out waiting for get operation")
+			return "", fmt.Errorf("no peer delivered the file within timeout (%s)", ctx.Err())
 		case evt, ok := <-completeCh:
-			if !ok || evt.RequestID != requestID {
+			if !ok {
 				continue
 			}
-			data := evt.Data.(event.GetCompleteData)
-			return data.Key, nil
+			d := evt.Data.(event.ReceiveCompleteData)
+			if d.Key != key {
+				continue
+			}
+			return d.Key, nil
 		case evt, ok := <-failedCh:
-			if !ok || evt.RequestID != requestID {
+			if !ok {
 				continue
 			}
-			data := evt.Data.(event.GetFailedData)
-			return "", data.Err
+			d := evt.Data.(event.ReceiveFailedData)
+			if d.Key != key {
+				continue
+			}
+			return "", d.Err
 		}
 	}
 }

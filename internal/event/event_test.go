@@ -3,7 +3,6 @@
 package event
 
 import (
-	"errors"
 	"sync"
 	"testing"
 	"time"
@@ -163,19 +162,19 @@ func TestBus_Publish_DifferentEventTypes(t *testing.T) {
 
 func TestBus_Publish_WithRequestID(t *testing.T) {
 	bus := NewBus()
-	ch := bus.Subscribe(FileGetComplete)
+	ch := bus.Subscribe(FileReceiveComplete)
 
 	go bus.Publish(Event{
-		Type:      FileGetComplete,
+		Type:      FileReceiveComplete,
 		RequestID: "req-123",
-		Data:      GetCompleteData{Key: "abc"},
+		Data:      ReceiveCompleteData{Key: "abc"},
 	})
 
 	select {
 	case evt := <-ch:
-		assert.Equal(t, FileGetComplete, evt.Type)
+		assert.Equal(t, FileReceiveComplete, evt.Type)
 		assert.Equal(t, "req-123", evt.RequestID)
-		data := evt.Data.(GetCompleteData)
+		data := evt.Data.(ReceiveCompleteData)
 		assert.Equal(t, "abc", data.Key)
 	case <-time.After(time.Second):
 		t.Fatal("timeout waiting for event")
@@ -243,10 +242,6 @@ func TestEventType_Constants(t *testing.T) {
 	assert.Equal(t, EventType("peer:discovered"), PeerDiscovered)
 	assert.Equal(t, EventType("peer:connected"), PeerConnected)
 	assert.Equal(t, EventType("peer:disconnected"), PeerDisconnected)
-	assert.Equal(t, EventType("file:get:started"), FileGetStarted)
-	assert.Equal(t, EventType("file:get:progress"), FileGetProgress)
-	assert.Equal(t, EventType("file:get:complete"), FileGetComplete)
-	assert.Equal(t, EventType("file:get:failed"), FileGetFailed)
 }
 
 func TestEvent_Struct(t *testing.T) {
@@ -261,30 +256,3 @@ func TestEvent_Struct(t *testing.T) {
 	assert.Equal(t, map[string]string{"peer": "123"}, evt.Data)
 }
 
-func TestGetStartedData(t *testing.T) {
-	data := GetStartedData{Key: "abc123"}
-	assert.Equal(t, "abc123", data.Key)
-}
-
-func TestGetProgressData(t *testing.T) {
-	data := GetProgressData{
-		Key:           "abc123",
-		BytesReceived: 512,
-		TotalBytes:    1024,
-	}
-	assert.Equal(t, "abc123", data.Key)
-	assert.Equal(t, int64(512), data.BytesReceived)
-	assert.Equal(t, int64(1024), data.TotalBytes)
-}
-
-func TestGetCompleteData(t *testing.T) {
-	data := GetCompleteData{Key: "abc123"}
-	assert.Equal(t, "abc123", data.Key)
-}
-
-func TestGetFailedData(t *testing.T) {
-	err := errors.New("transfer failed")
-	data := GetFailedData{Key: "abc123", Err: err}
-	assert.Equal(t, "abc123", data.Key)
-	assert.Equal(t, err, data.Err)
-}
