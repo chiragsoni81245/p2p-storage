@@ -5,7 +5,6 @@ package protocol
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"errors"
 	"testing"
 	"time"
@@ -28,7 +27,6 @@ func createTestHosts(t *testing.T) (host.Host, host.Host, func()) {
 	h2, err := libp2p.New(libp2p.ListenAddrStrings("/ip4/127.0.0.1/tcp/0"))
 	require.NoError(t, err)
 
-	// Connect h1 to h2
 	h1.Peerstore().AddAddrs(h2.ID(), h2.Addrs(), time.Hour)
 	h2.Peerstore().AddAddrs(h1.ID(), h1.Addrs(), time.Hour)
 
@@ -64,44 +62,13 @@ func TestConfig_CustomValues(t *testing.T) {
 	assert.Equal(t, 3*time.Second, cfg.HandlerTimeout)
 }
 
-func TestMessage_Struct(t *testing.T) {
-	msg := Message{
-		Type: "PING",
-		Key:  "test-key",
-		Data: "test-data",
-	}
-
-	assert.Equal(t, "PING", msg.Type)
-	assert.Equal(t, "test-key", msg.Key)
-	assert.Equal(t, "test-data", msg.Data)
-}
-
-func TestMessage_JSONSerialization(t *testing.T) {
-	original := Message{
-		Type: "TEST",
-		Key:  "key",
-		Data: "data",
-	}
-
-	// Encode to JSON
-	data, err := json.Marshal(original)
-	require.NoError(t, err)
-
-	// Decode back
-	var decoded Message
-	err = json.Unmarshal(data, &decoded)
-	require.NoError(t, err)
-
-	assert.Equal(t, original, decoded)
-}
-
 func TestPingHandler_Handle(t *testing.T) {
 	buf := &bytes.Buffer{}
 	logger := observability.NewLoggerWithWriter(buf, observability.Fields{})
 
 	handler := &PingHandler{Logger: logger}
 
-	msg := Message{Type: "PING", Data: "hello"}
+	msg := NewMessage("PING", "hello")
 
 	resp, err := handler.Handle(context.Background(), peer.ID("test-peer"), msg)
 	require.NoError(t, err)
@@ -109,7 +76,10 @@ func TestPingHandler_Handle(t *testing.T) {
 	respMsg, ok := resp.(Message)
 	require.True(t, ok)
 	assert.Equal(t, "PONG", respMsg.Type)
-	assert.Equal(t, "hello back", respMsg.Data)
+
+	data, err := Decode[string](respMsg)
+	require.NoError(t, err)
+	assert.Equal(t, "hello back", data)
 }
 
 func TestPingHandler_Handle_InvalidMessageType(t *testing.T) {
@@ -118,7 +88,6 @@ func TestPingHandler_Handle_InvalidMessageType(t *testing.T) {
 
 	handler := &PingHandler{Logger: logger}
 
-	// Pass wrong type
 	resp, err := handler.Handle(context.Background(), peer.ID("test"), "not a Message")
 
 	assert.Error(t, err)
@@ -143,7 +112,6 @@ func TestNew_RegistersStreamHandler(t *testing.T) {
 	protocolID := libp2pprotocol.ID("/test/1.0.0")
 	_ = New(h1, protocolID, handler, cfg, logger, limiter)
 
-	// Verify stream handler is registered by checking protocols
 	protocols := h1.Mux().Protocols()
 	found := false
 	for _, p := range protocols {
@@ -167,19 +135,18 @@ func TestProtocol_Send_Success(t *testing.T) {
 
 	protocolID := libp2pprotocol.ID("/test/ping/1.0.0")
 
-	// Register protocol on h2 (receiver)
 	_ = New(h2, protocolID, handler, cfg, logger, limiter)
-
-	// Create protocol on h1 (sender)
 	proto := New(h1, protocolID, handler, cfg, logger, limiter)
 
-	// Send message from h1 to h2
-	msg := Message{Type: "PING", Data: "hello"}
+	msg := NewMessage("PING", "hello")
 	resp, err := proto.Send(context.Background(), h2.ID(), msg)
 
 	require.NoError(t, err)
 	assert.Equal(t, "PONG", resp.Type)
-	assert.Equal(t, "hello back", resp.Data)
+
+	data, err := Decode[string](resp)
+	require.NoError(t, err)
+	assert.Equal(t, "hello back", data)
 }
 
 func TestProtocol_Send_MultipleMessages(t *testing.T) {
@@ -197,11 +164,8 @@ func TestProtocol_Send_MultipleMessages(t *testing.T) {
 	_ = New(h2, protocolID, handler, cfg, logger, limiter)
 	proto := New(h1, protocolID, handler, cfg, logger, limiter)
 
-	// Send multiple messages
 	for i := 0; i < 5; i++ {
-		msg := Message{Type: "PING", Data: "hello"}
-		resp, err := proto.Send(context.Background(), h2.ID(), msg)
-
+		resp, err := proto.Send(context.Background(), h2.ID(), NewMessage("PING", "hello"))
 		require.NoError(t, err)
 		assert.Equal(t, "PONG", resp.Type)
 	}
@@ -225,9 +189,8 @@ func TestProtocol_Send_UnknownPeer(t *testing.T) {
 	protocolID := libp2pprotocol.ID("/test/unknown/1.0.0")
 	proto := New(h1, protocolID, handler, cfg, logger, limiter)
 
-	// Try to send to unknown peer
 	unknownPeer, _ := peer.Decode("QmYyQSo1c1Ym7orWxLYvCrM2EmxFTANf8wXmmE7DWjhx5N")
-	_, err := proto.Send(context.Background(), unknownPeer, Message{Type: "PING"})
+	_, err := proto.Send(context.Background(), unknownPeer, NewMessage("PING", nil))
 
 	assert.Error(t, err)
 }
@@ -240,10 +203,9 @@ func TestProtocol_Send_ContextCancellation(t *testing.T) {
 	logger := observability.NewLoggerWithWriter(buf, observability.Fields{})
 	limiter := middleware.NewLimiter(10)
 
-	// Slow handler
 	slowHandler := core.HandlerFunc(func(ctx context.Context, peerID peer.ID, msg core.Message) (core.Message, error) {
 		time.Sleep(5 * time.Second)
-		return Message{Type: "PONG"}, nil
+		return NewMessage("PONG", nil), nil
 	})
 
 	cfg := DefaultConfig()
@@ -252,11 +214,10 @@ func TestProtocol_Send_ContextCancellation(t *testing.T) {
 	_ = New(h2, protocolID, slowHandler, cfg, logger, limiter)
 	proto := New(h1, protocolID, slowHandler, cfg, logger, limiter)
 
-	// Create cancelled context
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	_, err := proto.Send(ctx, h2.ID(), Message{Type: "PING"})
+	_, err := proto.Send(ctx, h2.ID(), NewMessage("PING", nil))
 	assert.Error(t, err)
 }
 
@@ -266,12 +227,11 @@ func TestProtocol_HandleStream_BackpressureRejection(t *testing.T) {
 
 	buf := &bytes.Buffer{}
 	logger := observability.NewLoggerWithWriter(buf, observability.Fields{})
-	limiter := middleware.NewLimiter(1) // Only allow 1 concurrent request
+	limiter := middleware.NewLimiter(1)
 
-	// Slow handler to hold the slot
 	slowHandler := core.HandlerFunc(func(ctx context.Context, peerID peer.ID, msg core.Message) (core.Message, error) {
 		time.Sleep(500 * time.Millisecond)
-		return Message{Type: "PONG"}, nil
+		return NewMessage("PONG", nil), nil
 	})
 
 	cfg := DefaultConfig()
@@ -280,20 +240,13 @@ func TestProtocol_HandleStream_BackpressureRejection(t *testing.T) {
 	_ = New(h2, protocolID, slowHandler, cfg, logger, limiter)
 	proto := New(h1, protocolID, slowHandler, cfg, logger, limiter)
 
-	// Start first request (will hold the slot)
 	go func() {
-		proto.Send(context.Background(), h2.ID(), Message{Type: "PING"})
+		proto.Send(context.Background(), h2.ID(), NewMessage("PING", nil))
 	}()
 
-	// Give it time to acquire slot
 	time.Sleep(50 * time.Millisecond)
 
-	// Second request should be rejected due to backpressure
-	// This will fail because the receiver will reset the stream
-	_, err := proto.Send(context.Background(), h2.ID(), Message{Type: "PING"})
-
-	// The error indicates the stream was reset (backpressure)
-	// This is expected behavior
+	_, err := proto.Send(context.Background(), h2.ID(), NewMessage("PING", nil))
 	assert.Error(t, err)
 	assert.Contains(t, err.Error(), "stream reset")
 }
@@ -316,11 +269,39 @@ func TestProtocol_HandleStream_HandlerError(t *testing.T) {
 	_ = New(h2, protocolID, errorHandler, cfg, logger, limiter)
 	proto := New(h1, protocolID, errorHandler, cfg, logger, limiter)
 
-	_, err := proto.Send(context.Background(), h2.ID(), Message{Type: "PING"})
-
-	// The sender will get an error because the handler didn't write a response
-	// (stream closes without proper response, resulting in EOF or similar)
+	_, err := proto.Send(context.Background(), h2.ID(), NewMessage("PING", nil))
 	assert.Error(t, err)
+}
+
+func TestProtocol_SendOneWay_Success(t *testing.T) {
+	h1, h2, cleanup := createTestHosts(t)
+	defer cleanup()
+
+	buf := &bytes.Buffer{}
+	logger := observability.NewLoggerWithWriter(buf, observability.Fields{})
+	limiter := middleware.NewLimiter(10)
+
+	received := make(chan Message, 1)
+	handler := core.HandlerFunc(func(ctx context.Context, peerID peer.ID, msg core.Message) (core.Message, error) {
+		received <- msg.(Message)
+		return nil, nil // fire-and-forget: no response
+	})
+
+	cfg := DefaultConfig()
+	protocolID := libp2pprotocol.ID("/test/oneway/1.0.0")
+
+	_ = New(h2, protocolID, handler, cfg, logger, limiter)
+	proto := New(h1, protocolID, handler, cfg, logger, limiter)
+
+	err := proto.SendOneWay(context.Background(), h2.ID(), NewMessage("NOTIFY", "payload"))
+	require.NoError(t, err)
+
+	select {
+	case msg := <-received:
+		assert.Equal(t, "NOTIFY", msg.Type)
+	case <-time.After(time.Second):
+		t.Fatal("timeout waiting for one-way message")
+	}
 }
 
 func TestProtocol_Bidirectional(t *testing.T) {
@@ -335,53 +316,14 @@ func TestProtocol_Bidirectional(t *testing.T) {
 
 	protocolID := libp2pprotocol.ID("/test/bidirectional/1.0.0")
 
-	// Both hosts can send and receive
 	proto1 := New(h1, protocolID, handler, cfg, logger, limiter)
 	proto2 := New(h2, protocolID, handler, cfg, logger, limiter)
 
-	// h1 sends to h2
-	resp1, err := proto1.Send(context.Background(), h2.ID(), Message{Type: "PING"})
+	resp1, err := proto1.Send(context.Background(), h2.ID(), NewMessage("PING", nil))
 	require.NoError(t, err)
 	assert.Equal(t, "PONG", resp1.Type)
 
-	// h2 sends to h1
-	resp2, err := proto2.Send(context.Background(), h1.ID(), Message{Type: "PING"})
+	resp2, err := proto2.Send(context.Background(), h1.ID(), NewMessage("PING", nil))
 	require.NoError(t, err)
 	assert.Equal(t, "PONG", resp2.Type)
-}
-
-func TestProtocol_CustomHandler(t *testing.T) {
-	h1, h2, cleanup := createTestHosts(t)
-	defer cleanup()
-
-	buf := &bytes.Buffer{}
-	logger := observability.NewLoggerWithWriter(buf, observability.Fields{})
-	limiter := middleware.NewLimiter(10)
-
-	// Custom echo handler
-	echoHandler := core.HandlerFunc(func(ctx context.Context, peerID peer.ID, msg core.Message) (core.Message, error) {
-		m := msg.(Message)
-		return Message{
-			Type: "ECHO",
-			Key:  m.Key,
-			Data: m.Data,
-		}, nil
-	})
-
-	cfg := DefaultConfig()
-	protocolID := libp2pprotocol.ID("/test/echo/1.0.0")
-
-	_ = New(h2, protocolID, echoHandler, cfg, logger, limiter)
-	proto := New(h1, protocolID, echoHandler, cfg, logger, limiter)
-
-	resp, err := proto.Send(context.Background(), h2.ID(), Message{
-		Type: "TEST",
-		Key:  "mykey",
-		Data: "mydata",
-	})
-
-	require.NoError(t, err)
-	assert.Equal(t, "ECHO", resp.Type)
-	assert.Equal(t, "mykey", resp.Key)
-	assert.Equal(t, "mydata", resp.Data)
 }

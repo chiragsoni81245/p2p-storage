@@ -70,12 +70,27 @@ var getCmd = &cobra.Command{
 	Long: `Retrieve a file from the P2P network using its key.
 
 If the file exists locally, it will be copied to the output path.
-Otherwise, it will be fetched from connected peers.`,
+Otherwise, a GET_FILE broadcast is sent into the network and the node
+waits for a peer to deliver the file directly.`,
 	Args:         cobra.RangeArgs(1, 2),
 	RunE:         runGet,
 	SilenceUsage: true,
 	Example: `  p2p-storage get abc123...def ./output.txt
   p2p-storage get abc123...def`,
+}
+
+// daemonCmd runs a propagation-only node
+var daemonCmd = &cobra.Command{
+	Use:   "daemon",
+	Short: "Run a propagation node",
+	Long: `Start a node that participates in file discovery and propagation.
+
+The node does not initiate any file transfers itself; it forwards
+GET_FILE requests to peers and delivers files it has locally.
+Press Ctrl+C to stop.`,
+	RunE:         runDaemon,
+	SilenceUsage: true,
+	Example:      `  p2p-storage daemon`,
 }
 
 // getFileKeyCmd gets the key for a file without storing
@@ -173,6 +188,8 @@ func init() {
 	rootCmd.AddCommand(getFileKeyCmd)
 	rootCmd.AddCommand(sendCmd)
 	rootCmd.AddCommand(receiveCmd)
+	rootCmd.AddCommand(daemonCmd)
+
 
 	// Flags for send command
 	sendCmd.Flags().BoolVar(&allowRelay, "allow-relay", false, "allow transfer over relayed connections (not recommended)")
@@ -268,37 +285,112 @@ func runGet(cmd *cobra.Command, args []string) error {
 	defer closeLog()
 	defer fs.Stop()
 
-	// Subscribe before firing the operation so no events are missed
-	bus := fs.GetBus()
-	progressCh := bus.Subscribe(event.FileGetProgress)
-	defer bus.Unsubscribe(event.FileGetProgress, progressCh)
-
-	// Print progress updates in background
-	requestID := key
-	go func() {
-		for evt := range progressCh {
-			if evt.RequestID != requestID {
-				continue
-			}
-			d := evt.Data.(event.GetProgressData)
-			if d.TotalBytes > 0 {
-				pct := float64(d.BytesReceived) / float64(d.TotalBytes) * 100
-				fmt.Printf("\rReceiving... %.0f%%", pct)
-			} else {
-				fmt.Print("\rReceiving...")
-			}
+	// Check local store first — no network needed
+	if fs.HasFile(key) {
+		if err := fs.WriteFileTo(key, outputPath); err != nil {
+			return fmt.Errorf("failed to save file: %w", err)
 		}
-	}()
+		fmt.Printf("✓ Saved to: %s (from local storage)\n", outputPath)
+		return nil
+	}
+
+	bus := fs.GetBus()
 
 	fmt.Printf("Discovering peers (%s)...\n", yamlConfig.PeerWait)
+	peerCount := operations.WaitForPeers(fs, yamlConfig.PeerWait)
+	if peerCount == 0 {
+		return fmt.Errorf("no peers available")
+	}
 
-	ctx, cancel := context.WithTimeout(context.Background(), yamlConfig.Timeout)
+	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 
-	operations.GetFile(fs, yamlConfig, key, requestID, bus)
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Println("\nCancelled.")
+		cancel()
+	}()
 
-	if _, err := operations.WaitForGet(ctx, bus, requestID); err != nil {
-		return fmt.Errorf("failed to get file: %w", err)
+	// Subscribe before broadcasting so no events are missed
+	startedCh := bus.Subscribe(event.FileReceiveStarted)
+	progressCh := bus.Subscribe(event.FileReceiveProgress)
+	completeCh := bus.Subscribe(event.FileReceiveComplete)
+	failedCh := bus.Subscribe(event.FileReceiveFailed)
+	defer bus.Unsubscribe(event.FileReceiveStarted, startedCh)
+	defer bus.Unsubscribe(event.FileReceiveProgress, progressCh)
+	defer bus.Unsubscribe(event.FileReceiveComplete, completeCh)
+	defer bus.Unsubscribe(event.FileReceiveFailed, failedCh)
+
+	operations.Get(ctx, fs, key, bus)
+
+	p := mpb.NewWithContext(ctx)
+	var bar *mpb.Bar
+	var getErr error
+
+loop:
+	for {
+		select {
+		case <-ctx.Done():
+			getErr = fmt.Errorf("cancelled")
+			break loop
+		case evt, ok := <-startedCh:
+			if !ok {
+				continue
+			}
+			d := evt.Data.(event.ReceiveStartedData)
+			if d.Key != key {
+				continue
+			}
+			bar = p.AddBar(d.Size,
+				mpb.PrependDecorators(
+					decor.Name(key[:min(16, len(key))], decor.WC{C: decor.DindentRight | decor.DextraSpace}),
+					decor.CountersKibiByte("% .2f / % .2f"),
+				),
+				mpb.AppendDecorators(decor.EwmaETA(decor.ET_STYLE_GO, 30)),
+			)
+		case evt, ok := <-progressCh:
+			if !ok || bar == nil {
+				continue
+			}
+			d := evt.Data.(event.ReceiveProgressData)
+			if d.Key == key {
+				bar.SetCurrent(d.BytesReceived)
+			}
+		case evt, ok := <-completeCh:
+			if !ok {
+				continue
+			}
+			d := evt.Data.(event.ReceiveCompleteData)
+			if d.Key != key {
+				continue
+			}
+			if bar != nil {
+				bar.SetCurrent(d.Size)
+				bar.SetTotal(d.Size, true)
+			}
+			break loop
+		case evt, ok := <-failedCh:
+			if !ok {
+				continue
+			}
+			d := evt.Data.(event.ReceiveFailedData)
+			if d.Key != key {
+				continue
+			}
+			if bar != nil {
+				bar.Abort(true)
+			}
+			getErr = d.Err
+			break loop
+		}
+	}
+
+	p.Wait()
+
+	if getErr != nil {
+		return fmt.Errorf("failed to get file: %w", getErr)
 	}
 
 	// File is now in local storage — copy it to the requested output path
@@ -306,7 +398,46 @@ func runGet(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("failed to save file: %w", err)
 	}
 
-	fmt.Printf("\n✓ Saved to: %s\n", outputPath)
+	fmt.Printf("✓ Saved to: %s\n", outputPath)
+	return nil
+}
+
+func runDaemon(cmd *cobra.Command, args []string) error {
+	fs, closeLog, err := startServer()
+	if err != nil {
+		return err
+	}
+	defer closeLog()
+	defer fs.Stop()
+
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	sigCh := make(chan os.Signal, 1)
+	signal.Notify(sigCh, os.Interrupt, syscall.SIGTERM)
+	go func() {
+		<-sigCh
+		fmt.Println("\nShutting down...")
+		cancel()
+	}()
+
+	fmt.Println("Daemon running. Ctrl+C to stop.")
+
+	operations.StartDaemon(ctx, fs, func(evt event.Event) {
+		switch evt.Type {
+		case event.GetReceived:
+			d := evt.Data.(event.GetReceivedData)
+			fmt.Printf("[relay]    key=%s msgID=%s ttl=%d\n", d.Key[:min(16, len(d.Key))], d.MsgID[:8], d.TTL)
+		case event.GetDelivering:
+			d := evt.Data.(event.GetDeliveringData)
+			fmt.Printf("[deliver]  key=%s requester=%s\n", d.Key[:min(16, len(d.Key))], d.RequesterID[:min(16, len(d.RequesterID))])
+		case event.GetDelivered:
+			d := evt.Data.(event.GetDeliveredData)
+			fmt.Printf("[done]     key=%s msgID=%s\n", d.Key[:min(16, len(d.Key))], d.MsgID[:8])
+		}
+	})
+
+	<-ctx.Done()
 	return nil
 }
 

@@ -25,8 +25,5 @@ func (h *PingHandler) Handle(ctx context.Context, peerID peer.ID, msg core.Messa
 		"peer_id": peerID,
 	})
 
-	return Message{
-		Type: "PONG",
-		Data: "hello back",
-	}, nil
+	return NewMessage("PONG", "hello back"), nil
 }
