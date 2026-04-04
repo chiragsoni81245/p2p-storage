@@ -763,6 +763,29 @@ func (fs *FileServer) WaitForDirectConnection(ctx context.Context, peerID peer.I
 	return ErrRelayedConnection
 }
 
+// WaitForRelayReservation blocks until at least one relay circuit address appears
+// in the node's address list, indicating a relay reservation is active.
+// Returns immediately if no relay servers are configured.
+func (fs *FileServer) WaitForRelayReservation(ctx context.Context) error {
+	if len(fs.Config.NodeConfig.RelayServers) == 0 {
+		return nil
+	}
+	ticker := time.NewTicker(500 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+			for _, addr := range fs.GetNodeAddresses() {
+				if strings.Contains(addr, "/p2p-circuit/") {
+					return nil
+				}
+			}
+		}
+	}
+}
+
 // StoreFileToPeerDirect sends a file to a peer only if direct connection exists.
 // Returns ErrRelayedConnection if only relayed connection is available.
 func (fs *FileServer) StoreFileToPeerDirect(ctx context.Context, peerID peer.ID, key, session string) error {
@@ -770,4 +793,79 @@ func (fs *FileServer) StoreFileToPeerDirect(ctx context.Context, peerID peer.ID,
 		return ErrRelayedConnection
 	}
 	return fs.StoreFileToPeer(ctx, peerID, key, session)
+}
+
+// ConnectOpts controls how ConnectWithHolePunch behaves.
+type ConnectOpts struct {
+	// HolePunchWait is how long to wait for hole punching to produce a direct
+	// connection after connecting through a relay. Zero skips hole punching.
+	HolePunchWait time.Duration
+}
+
+// ConnectWithHolePunch connects to peerAddr, transparently handling relay circuit
+// addresses. For relay addresses it:
+//  1. Connects to the relay
+//  2. Waits up to GetConnectTimeout for our own relay reservation to appear
+//  3. Connects to the peer through the relay
+//  4. If opts.HolePunchWait > 0, waits for hole punching to establish a direct connection
+//  5. If !opts.AllowRelay and no direct connection, returns ErrRelayedConnection
+//
+// Each connection step is bounded by GetConnectTimeout; the outer ctx provides
+// an additional cancellation boundary.
+func (fs *FileServer) ConnectWithHolePunch(ctx context.Context, peerAddr string, opts ConnectOpts) (peer.ID, error) {
+	if !strings.Contains(peerAddr, "/p2p-circuit/") {
+		return fs.ConnectToPeer(ctx, peerAddr)
+	}
+
+	// --- Relay circuit address ---
+	relayPart := strings.Split(peerAddr, "/p2p-circuit/")[0]
+
+	// 1. Connect to the relay
+	relayCtx, relayCancel := context.WithTimeout(ctx, GetConnectTimeout)
+	relayPeerID, err := fs.ConnectToPeer(relayCtx, relayPart)
+	relayCancel()
+	if err != nil {
+		return "", fmt.Errorf("failed to connect to relay: %w", err)
+	}
+
+	// 2. Wait for our own relay reservation on that relay
+	reservationCtx, reservationCancel := context.WithTimeout(ctx, GetConnectTimeout)
+	ticker := time.NewTicker(500 * time.Millisecond)
+	reservationOK := false
+reservationLoop:
+	for {
+		select {
+		case <-reservationCtx.Done():
+			break reservationLoop
+		case <-ticker.C:
+			for _, addr := range fs.GetNodeAddresses() {
+				if strings.Contains(addr, relayPeerID.String()) {
+					reservationOK = true
+					break reservationLoop
+				}
+			}
+		}
+	}
+	ticker.Stop()
+	reservationCancel()
+	if !reservationOK {
+		return "", fmt.Errorf("timed out waiting for relay reservation on %s", relayPart)
+	}
+
+	// 3. Connect to the peer through the relay
+	peerCtx, peerCancel := context.WithTimeout(ctx, GetConnectTimeout)
+	peerID, err := fs.ConnectToPeer(peerCtx, peerAddr)
+	peerCancel()
+	if err != nil {
+		return "", fmt.Errorf("failed to connect to peer through relay: %w", err)
+	}
+
+	// 4. Attempt hole punching if requested — best-effort, does not fail the call
+	if opts.HolePunchWait > 0 {
+		hpCtx, hpCancel := context.WithTimeout(ctx, opts.HolePunchWait)
+		_ = fs.WaitForDirectConnection(hpCtx, peerID, opts.HolePunchWait)
+		hpCancel()
+	}
+
+	return peerID, nil
 }

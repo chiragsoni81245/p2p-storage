@@ -1,7 +1,5 @@
 package operations
 
-import "time"
-
 // RequestID uniquely identifies an async operation so callers can correlate events.
 type RequestID = string
 
@@ -18,7 +16,5 @@ type SendResult struct {
 
 // SendOpts configures the behaviour of SendFile.
 type SendOpts struct {
-	AllowRelay    bool
-	HolePunchWait time.Duration
-	Session       string
+	Session string
 }

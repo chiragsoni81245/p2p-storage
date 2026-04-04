@@ -190,12 +190,12 @@ func (fth *FileTransferHandler) handleIncomingStream(s network.Stream) {
 			"key":   key,
 			"peer":  remotePeer.String(),
 		})
+		s.Write([]byte{0})
 		fth.fs.bus.Publish(event.Event{
 			Type: event.FileReceiveFailed,
 			Data: event.ReceiveFailedData{Key: key, Err: err},
 		})
 		fth.fs.notifyTransferComplete(key, err)
-		s.Write([]byte{0})
 		return
 	}
 
@@ -205,13 +205,17 @@ func (fth *FileTransferHandler) handleIncomingStream(s network.Stream) {
 		"peer": remotePeer.String(),
 	})
 
+	// Acknowledge the sender before publishing events — publishing FileReceiveComplete
+	// can cause the receiving node to begin shutting down (defer fs.Stop()), which
+	// closes the connection and makes the sender unable to read this byte.
+	s.Write([]byte{1})
+
 	fth.fs.bus.Publish(event.Event{
 		Type: event.FileReceiveComplete,
 		Data: event.ReceiveCompleteData{Key: key, Size: written},
 	})
 
 	fth.fs.notifyTransferComplete(key, nil)
-	s.Write([]byte{1})
 }
 
 // progressTrackingReader wraps a reader and publishes FileReceiveProgress events.

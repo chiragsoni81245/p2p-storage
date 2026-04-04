@@ -10,7 +10,7 @@ Files are content-addressed using SHA256 hashes and stored locally with AES-256 
 - AES-256 encryption at rest with streaming encryption
 - Multiple discovery methods: mDNS (local), DHT (distributed), and bootstrap peers
 - Hop-get: broadcast file requests propagate through the network; any node that has the file connects back and delivers it directly
-- Direct peer-to-peer file transfer with NAT hole punching and relay fallback
+- Direct peer-to-peer file transfer with NAT traversal via hole punching (DCUtR) through relay servers
 - Session-based receive mode: only accept transfers from senders with the correct session name
 - Daemon mode: run a propagation-only node that relays get requests and delivers files it holds
 - Connection management with configurable limits
@@ -20,7 +20,7 @@ Files are content-addressed using SHA256 hashes and stored locally with AES-256 
 
 ## Requirements
 
-- Go 1.25.7+
+- Go 1.21+
 
 ## Installation
 
@@ -52,7 +52,9 @@ p2p-storage get abc123...def ./output.txt
 p2p-storage get abc123...def
 ```
 
-Checks local storage first. If the file is not found locally, broadcasts a `GET_FILE` request into the network. Any peer that holds the file will connect back and deliver it directly. The command waits until delivery completes or the timeout expires.
+Checks local storage first. If the file is not found locally, broadcasts a `GET_FILE` request into the network. Any peer that holds the file will connect back and deliver it directly. The command waits until delivery completes or you press Ctrl+C.
+
+If relay servers are configured, the node waits for its relay reservation to appear in its address list before broadcasting, so the delivering peer can reach it even when behind NAT.
 
 ### Get file key
 
@@ -71,18 +73,26 @@ Calculates the storage key for a file without storing it. Useful for scripting.
 p2p-storage send <filepath> <peer-multiaddr>
 
 # Direct connection
-p2p-storage send ./myfile.txt /ip4/3.90.43.169/tcp/9999/p2p/12D3KooWKncG1bn23yiLDM8fhEmCQMbCgdXmsBrYJP3hcZkeUauy
+p2p-storage send ./myfile.txt /ip4/192.168.1.10/tcp/4001/p2p/12D3KooW...
 
-# Through a relay with hole punching (peer must already be registered with the relay)
-p2p-storage send ./myfile.txt /ip4/3.90.43.169/tcp/4001/p2p/12D3KooWJ7Q8u2KvMD1XfkhctUfgsNvDFd9RVJwjtKwJbj74kUaC/p2p-circuit/p2p/12D3KooWKncG1bn23yiLDM8fhEmCQMbCgdXmsBrYJP3hcZkeUauy
+# Through a relay — hole punching is attempted automatically to establish a direct connection
+p2p-storage send ./myfile.txt /ip4/3.90.43.169/tcp/4001/p2p/12D3KooWRelay.../p2p-circuit/p2p/12D3KooWTarget...
 
-# Through a relay without attempting a direct connection (not recommended for sensitive data)
-p2p-storage send --allow-relay ./myfile.txt /ip4/3.90.43.169/tcp/4001/p2p/12D3KooWJ7Q8u2KvMD1XfkhctUfgsNvDFd9RVJwjtKwJbj74kUaC/p2p-circuit/p2p/12D3KooWKncG1bn23yiLDM8fhEmCQMbCgdXmsBrYJP3hcZkeUauy
+# With a session name required by the receiver
+p2p-storage send --session mysession ./myfile.txt /ip4/192.168.1.10/tcp/4001/p2p/12D3KooW...
 ```
 
-Sends a file directly to a specific peer. The file is stored locally first, then transferred. By default only a direct connection is used; if both peers are behind NAT, hole punching is attempted. Use `--allow-relay` to permit transfer over a relayed connection.
+Sends a file directly to a specific peer. The file is stored locally first, then transferred.
 
-If the receiver is running with `--session`, supply the matching name via `--session` or the transfer will be rejected before the stream opens. If the receiver already has the file it will also be rejected.
+For relay circuit addresses (`/p2p-circuit/`), the sender:
+1. Connects to the relay
+2. Waits for its own relay reservation so it is reachable back
+3. Connects to the target peer through the relay
+4. Attempts hole punching to upgrade to a direct connection
+
+By default, only direct connections are used for the transfer. If hole punching fails and a direct connection cannot be established, the transfer is rejected. Set `allow_relayed_transfer: true` in your config to permit transfers over relay when hole punching fails.
+
+If the receiver is running `receive --session <name>`, supply the matching name via `--session` or the transfer will be rejected. If the receiver already has the file it will also be rejected.
 
 ### Run a propagation node (daemon)
 
@@ -138,8 +148,6 @@ Share one of the printed addresses with the sender so they can connect.
 
 | Flag | Default | Description |
 |------|---------|-------------|
-| `--allow-relay` | false | Allow transfer over a relayed connection |
-| `--hole-punch-wait` | `10s` | Time to wait for hole punching before giving up |
 | `--session` | | Session name required by the receiver |
 
 ### Receive-specific flags
@@ -148,17 +156,37 @@ Share one of the printed addresses with the sender so they can connect.
 |------|---------|-------------|
 | `--session` | (required) | Session name that senders must supply |
 
+## NAT Traversal
+
+When peers are behind NAT, direct connections require additional setup. The node supports two mechanisms, both configurable in `config.yaml`:
+
+**Hole punching (DCUtR)** — After connecting through a relay, both peers simultaneously attempt a direct connection. This succeeds in most NAT configurations. Enabled by default (`enable_hole_punch: true`). The wait time is controlled by `hole_punch_wait` (default `10s`).
+
+**Relay fallback** — If hole punching fails, the transfer can optionally proceed over the relay connection. This is disabled by default (`allow_relayed_transfer: false`) to keep transfers direct and secure. Enable it only if your peers are behind strict NAT and hole punching never succeeds.
+
+To use relay-based NAT traversal, add relay server addresses to your config:
+
+```yaml
+node:
+  relay_servers:
+    - /ip4/1.2.3.4/tcp/4001/p2p/12D3KooWRelayPeerID...
+  enable_relay: true
+  enable_hole_punch: true
+  hole_punch_wait: 10s
+  allow_relayed_transfer: false  # set true only if hole punching never works
+```
+
 ## Peer Discovery
 
 The node supports three discovery methods that can be combined:
 
-- **mDNS** - Automatic local network discovery, enabled by default
-- **DHT** - Kademlia distributed hash table for internet-wide discovery
-- **Bootstrap** - Connect to known peers at startup
+- **mDNS** — Automatic local network discovery, enabled by default
+- **DHT** — Kademlia distributed hash table for internet-wide discovery
+- **Bootstrap** — Connect to known peers at startup
 
 ```bash
 # Local network only (default)
-p2p-storage -d mdns get <key>
+p2p-storage get <key>
 
 # DHT for internet-wide discovery
 p2p-storage -d dht get <key>
@@ -198,11 +226,15 @@ Key defaults:
 
 | Option | Default | Description |
 |--------|---------|-------------|
-| `node.listen_port` | 0 (random) | TCP port to listen on |
+| `node.listen_port` | 0 (random) | TCP/QUIC port to listen on |
 | `node.identity_path` | `./node.key` | Path to node identity key |
 | `node.min_connection` | 50 | Connection manager low watermark |
 | `node.max_connection` | 100 | Connection manager high watermark |
 | `node.concurrency` | 10 | Max concurrent requests |
+| `node.enable_relay` | true | Enable relay client for NAT traversal |
+| `node.enable_hole_punch` | true | Enable hole punching (DCUtR) |
+| `node.hole_punch_wait` | `10s` | Time to wait for hole punching |
+| `node.allow_relayed_transfer` | false | Allow transfers over relay if hole punching fails |
 | `encryption.enabled` | true | Enable AES-256 encryption at rest |
 | `encryption.key_path` | `./encryption.key` | Path to encryption key |
 

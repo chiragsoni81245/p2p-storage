@@ -11,11 +11,16 @@ import (
 )
 
 // Get broadcasts a GET_FILE request into the network.
-// It registers a transfer waiter so the delivery will be accepted without a session.
-// Follow with WaitForGet to block until the file arrives.
+// If relay servers are configured it waits for a relay circuit reservation before
+// broadcasting, so that RequesterAddrs includes the circuit address the delivering
+// peer can reach us through. The wait is bounded by ctx (e.g. Ctrl-C).
 func Get(ctx context.Context, fs *fileserver.FileServer, key string, bus *event.Bus) {
-	// Register waiter before broadcasting so we don't miss the incoming transfer
+	// Register waiter before broadcasting so we don't miss the incoming transfer.
 	fs.RegisterTransferWaiter(key)
+
+	// Wait for a relay circuit address to appear in our address list.
+	// This is a no-op when no relay servers are configured.
+	_ = fs.WaitForRelayReservation(ctx)
 
 	payload := protocol.GetFilePayload{
 		Key:            key,

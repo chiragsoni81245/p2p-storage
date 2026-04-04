@@ -108,11 +108,7 @@ after it has been stored by any peer.`,
 }
 
 // Flags for send command
-var (
-	allowRelay    bool
-	holePunchWait time.Duration
-	sendSession   string
-)
+var sendSession string
 
 // Flags for receive command
 var receiveSession string
@@ -192,8 +188,6 @@ func init() {
 
 
 	// Flags for send command
-	sendCmd.Flags().BoolVar(&allowRelay, "allow-relay", false, "allow transfer over relayed connections (not recommended)")
-	sendCmd.Flags().DurationVar(&holePunchWait, "hole-punch-wait", 10*time.Second, "time to wait for hole punching to establish direct connection")
 	sendCmd.Flags().StringVar(&sendSession, "session", "", "session name required by the receiver (optional)")
 
 	// Flags for receive command
@@ -477,9 +471,7 @@ func runSend(cmd *cobra.Command, args []string) error {
 	defer cancel()
 
 	result, err := operations.SendFile(ctx, fs, yamlConfig, filePath, peerAddr, operations.SendOpts{
-		AllowRelay:    allowRelay,
-		HolePunchWait: holePunchWait,
-		Session:       sendSession,
+		Session: sendSession,
 	})
 	if err != nil {
 		return err

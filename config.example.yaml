@@ -45,6 +45,16 @@ node:
   # Set to true ONLY on your EC2 relay server
   enable_relay_service: false
 
+  # Allow file transfers to proceed over relayed connections.
+  # When false (default), transfers require a direct connection; hole punching is
+  # attempted first, but if it fails the transfer is rejected.
+  # Set to true only if peers are behind strict NAT and hole punching never succeeds.
+  allow_relayed_transfer: false
+
+  # How long to wait for hole punching to establish a direct connection after
+  # an initial relay connection is made.
+  hole_punch_wait: 10s
+
   # External IP for cloud instances (EC2, GCP, etc.)
   # When running as a relay server, set this to your public IP
   # libp2p can't auto-detect public IPs on cloud instances
